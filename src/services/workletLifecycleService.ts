@@ -183,6 +183,33 @@ export class WorkletLifecycleService {
   }
 
   /**
+   * Ensure worklet is started, starting it if needed
+   * 
+   * @param networkConfigs - Network configs (required if autoStart=true)
+   * @param options - Options
+   * @param options.autoStart - If true, start worklet if not started (default: false)
+   * @throws Error if worklet not started and autoStart=false or networkConfigs not provided
+   */
+  static async ensureWorkletStarted(
+    networkConfigs?: NetworkConfigs,
+    options?: { autoStart?: boolean }
+  ): Promise<void> {
+    const store = getWorkletStore()
+    const state = store.getState()
+    
+    if (state.isWorkletStarted) {
+      return // Already started
+    }
+    
+    const autoStart = options?.autoStart ?? false
+    if (!autoStart || !networkConfigs) {
+      throw new Error('Worklet must be started before this operation')
+    }
+    
+    await this.startWorklet(networkConfigs)
+  }
+
+  /**
    * Initialize WDK with encrypted seed (ONLY encrypted approach)
    */
   static async initializeWDK(

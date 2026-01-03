@@ -7,7 +7,10 @@
  */
 
 import { convertBigIntToString } from '../utils/balanceUtils'
+import { ALLOWED_ACCOUNT_METHODS, type AllowedAccountMethod } from '../utils/constants'
 import { handleServiceError } from '../utils/errorHandling'
+import { safeStringify } from '../utils/jsonUtils'
+import { workletResponseSchema, balanceResponseSchema } from '../utils/schemas'
 import { requireInitialized } from '../utils/storeHelpers'
 import { validateAccountIndex, validateNetworkName } from '../utils/validation'
 
@@ -21,10 +24,14 @@ export class AccountService {
    * Call a method on a wallet account
    * Generic method for calling any account method through the worklet
    * 
+   * The worklet should already have the correct wallet loaded via `initializeWDK`.
+   * Wallet switching is handled at the hook level before calling this service.
+   * 
    * @param network - Network name
    * @param accountIndex - Account index
    * @param methodName - Method name
    * @param args - Optional arguments for the method
+   * @param walletId - Optional wallet identifier (for consistency, worklet should already have correct wallet loaded)
    * @returns Promise with the method result
    * @throws Error if methodName is not in the allowed list or if validation fails
    * 
@@ -54,11 +61,19 @@ export class AccountService {
     network: string,
     accountIndex: number,
     methodName: string,
-    args?: unknown
+    args?: unknown,
+    walletId?: string
   ): Promise<T> {
     // Validate methodName parameter
     if (typeof methodName !== 'string' || methodName.trim().length === 0) {
       throw new Error('methodName must be a non-empty string')
+    }
+
+    // Whitelist validation - only allow approved methods
+    if (!ALLOWED_ACCOUNT_METHODS.includes(methodName as AllowedAccountMethod)) {
+      throw new Error(
+        `Method "${methodName}" is not allowed. Allowed methods: ${ALLOWED_ACCOUNT_METHODS.join(', ')}`
+      )
     }
 
     // Validate inputs
@@ -68,22 +83,32 @@ export class AccountService {
     // Require initialized worklet
     const hrpc = requireInitialized()
 
+    // Validate and sanitize args before stringification
+    let argsString: string | null = null
+    if (args !== undefined && args !== null) {
+      // Validate structure and stringify safely
+      argsString = safeStringify(args)
+    }
+
     try {
       const response = await hrpc.callMethod({
         methodName,
         network,
         accountIndex,
-        args: args ? JSON.stringify(args) : null,
+        args: argsString,
       })
 
-      if (!response.result) {
+      // Validate response structure
+      const validatedResponse = workletResponseSchema.parse(response)
+
+      if (!validatedResponse.result) {
         throw new Error(`Method ${methodName} returned no result`)
       }
 
       // Parse the result and handle BigInt values
       let parsed: T
       try {
-        parsed = JSON.parse(response.result) as T
+        parsed = JSON.parse(validatedResponse.result) as T
         // Basic validation: ensure parsed is not null/undefined
         if (parsed === null || parsed === undefined) {
           throw new Error('Parsed result is null or undefined')
@@ -93,6 +118,14 @@ export class AccountService {
           throw error
         }
         throw new Error(`Failed to parse result from ${methodName}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      
+      // Runtime type validation based on method type
+      if (methodName === 'getBalance' || methodName === 'getTokenBalance') {
+        // Validate balance format
+        if (typeof parsed !== 'string' || !/^\d+$/.test(parsed)) {
+          throw new Error(`Invalid balance format: ${parsed}`)
+        }
       }
       
       // Recursively convert BigInt values to strings to prevent serialization errors

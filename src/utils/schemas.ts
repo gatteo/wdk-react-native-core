@@ -164,3 +164,27 @@ export const walletSchema = z.object({
   updatedAt: z.number().int().nonnegative(),
 })
 
+/**
+ * Worklet response schemas for runtime validation
+ */
+export const workletResponseSchema = z.object({
+  result: z.string(),
+  error: z.string().optional(),
+})
+
+/**
+ * Balance response schema (numeric string)
+ */
+export const balanceResponseSchema = z.string().regex(/^\d+$/, {
+  message: 'Balance must be a numeric string',
+})
+
+/**
+ * Account method response schema (union of possible return types)
+ */
+export const accountMethodResponseSchema = z.union([
+  balanceResponseSchema,
+  z.string(), // For addresses
+  z.object({}).passthrough(), // For other responses (objects)
+])
+

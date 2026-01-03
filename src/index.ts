@@ -35,12 +35,10 @@ export { useWorklet } from './hooks/useWorklet'
 export { useWallet } from './hooks/useWallet'
 export { useWdkApp } from './hooks/useWdkApp'
 
-// New consolidated hooks
 export { useWalletManager } from './hooks/useWalletManager'
 export type { UseWalletManagerResult, WalletInfo } from './hooks/useWalletManager'
 export { useBalance, useBalancesForWallet, useRefreshBalance, balanceQueryKeys } from './hooks/useBalance'
-export { useAccountList } from './hooks/useAccountList'
-export type { UseAccountListResult, AccountInfo } from './hooks/useAccountList'
+export type { AccountInfo } from './store/walletStore'
 
 // Validation Utilities (for validating configs before use)
 export { 
@@ -82,6 +80,7 @@ export { AddressService } from './services/addressService'
 export { AccountService } from './services/accountService'
 export { BalanceService } from './services/balanceService'
 export { WalletSetupService } from './services/walletSetupService'
+export { WalletSwitchingService } from './services/walletSwitchingService'
 
 // Utility Functions
 export { validateMnemonic } from './utils/mnemonicUtils'
@@ -95,24 +94,19 @@ export { ok, err, toResult, toResultSync } from './utils/result'
 // Initialization State Machine
 export { 
   InitializationStatus, 
+  AppStatus,
   isErrorStatus, 
   isReadyStatus, 
-  isInProgressStatus, 
-  isWalletInitializedStatus, 
+  isInProgressStatus,
+  isAppReadyStatus,
+  isAppInProgressStatus,
   hasWorkletStarted,
   canLoadWallet,
+  hasWorkletStartedApp,
+  canLoadWalletApp,
   getStatusMessage,
+  getAppStatusMessage,
+  getWorkletStatus,
   getCombinedStatus
 } from './utils/initializationState'
-
-// Wallet State Machine
-export { 
-  walletReducer,
-  getWalletIdentifier,
-  isWalletErrorState,
-  isWalletLoadingState,
-  isWalletReadyState,
-  type WalletState,
-  type WalletAction
-} from './utils/walletState'
 

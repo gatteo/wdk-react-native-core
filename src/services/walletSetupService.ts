@@ -1,19 +1,17 @@
 import type { SecureStorage } from '@tetherto/wdk-react-native-secure-storage'
 
-import { getWorkletStore } from '../store/workletStore'
+import { 
+  getWorkletStore,
+  getCachedCredentials,
+  setCachedCredentials,
+  clearCredentialsCache as clearWorkletCredentialsCache,
+  type CachedCredentials
+} from '../store/workletStore'
+import { WalletSwitchingService } from './walletSwitchingService'
 import { WorkletLifecycleService } from './workletLifecycleService'
 import { DEFAULT_MNEMONIC_WORD_COUNT } from '../utils/constants'
-import { log } from '../utils/logger'
+import { log, logError } from '../utils/logger'
 import type { NetworkConfigs } from '../types'
-
-/**
- * Cached credentials interface
- */
-interface CachedCredentials {
-  encryptionKey?: string
-  encryptedSeed?: string
-  encryptedEntropy?: string
-}
 
 /**
  * Wallet setup service
@@ -94,21 +92,16 @@ interface CachedCredentials {
  * 
  * ```typescript
  * // Create new wallet (always requires biometrics)
- * await WalletSetupService.createNewWallet(networkConfigs, userEmail)
+ * await WalletSetupService.createNewWallet(networkConfigs, walletId)
  * 
  * // Load existing wallet (biometrics only if not cached)
- * const credentials = await WalletSetupService.loadExistingWallet(userEmail)
+ * const credentials = await WalletSetupService.loadExistingWallet(walletId)
  * 
  * // Clear cache (e.g., on logout)
- * WalletSetupService.clearCredentialsCache(userEmail)
+ * WalletSetupService.clearCredentialsCache(walletId)
  * ```
  */
 export class WalletSetupService {
-  /**
-   * Internal cache for credentials (ephemeral memory only)
-   * Keyed by identifier for multi-wallet support
-   */
-  private static credentialsCache = new Map<string, CachedCredentials>()
 
   /**
    * SecureStorage singleton instance
@@ -157,46 +150,47 @@ export class WalletSetupService {
   }
 
   /**
-   * Get cache key for identifier
+   * Get cache key for walletId
    */
-  private static getCacheKey(identifier?: string): string {
-    return identifier || 'default'
+  private static getCacheKey(walletId?: string): string {
+    return walletId || 'default'
   }
 
   /**
    * Cache credentials after retrieval
    */
   private static cacheCredentials(
-    identifier: string | undefined,
+    walletId: string | undefined,
     encryptionKey?: string,
     encryptedSeed?: string,
     encryptedEntropy?: string
   ): void {
-    const cacheKey = this.getCacheKey(identifier)
-    const existing = this.credentialsCache.get(cacheKey) || {}
+    const cacheKey = this.getCacheKey(walletId)
+    const existing = getCachedCredentials(cacheKey) || {}
     
-    this.credentialsCache.set(cacheKey, {
+    // Use workletStore functions for all credential caching
+    setCachedCredentials(cacheKey, {
       ...existing,
       ...(encryptionKey && { encryptionKey }),
       ...(encryptedSeed && { encryptedSeed }),
       ...(encryptedEntropy && { encryptedEntropy }),
     })
     
-    log('✅ Credentials cached in memory', { hasIdentifier: !!identifier })
+    log('Credentials cached', { hasWalletId: !!walletId })
   }
 
   /**
    * Generic helper to retrieve a credential value (checks cache first, then secureStorage)
    */
   private static async getCredential<T extends 'encryptionKey' | 'encryptedSeed' | 'encryptedEntropy'>(
-    identifier: string | undefined,
+    walletId: string | undefined,
     credentialType: T,
-    fetchFn: (identifier?: string) => Promise<string | null>,
+    fetchFn: (walletId?: string) => Promise<string | null>,
     cacheKey: keyof CachedCredentials
   ): Promise<string | null> {
     const secureStorage = this.getSecureStorage()
-    const cacheKeyStr = this.getCacheKey(identifier)
-    const cached = this.credentialsCache.get(cacheKeyStr)
+    const cacheKeyStr = this.getCacheKey(walletId)
+    const cached = getCachedCredentials(cacheKeyStr)
 
     if (cached?.[cacheKey]) {
       const logMessage = credentialType === 'encryptionKey' 
@@ -210,16 +204,16 @@ export class WalletSetupService {
       log('Encryption key not in cache, fetching from secureStorage...')
     }
 
-    const value = await fetchFn(identifier)
+    const value = await fetchFn(walletId)
 
     if (value) {
       // Cache it for future use
       if (credentialType === 'encryptionKey') {
-        this.cacheCredentials(identifier, value)
+        this.cacheCredentials(walletId, value)
       } else if (credentialType === 'encryptedSeed') {
-        this.cacheCredentials(identifier, undefined, value)
+        this.cacheCredentials(walletId, undefined, value)
       } else {
-        this.cacheCredentials(identifier, undefined, undefined, value)
+        this.cacheCredentials(walletId, undefined, undefined, value)
       }
     }
 
@@ -249,8 +243,7 @@ export class WalletSetupService {
       await WorkletLifecycleService.startWorklet(networkConfigs)
     }
 
-    // Save current state to restore after validation
-    const wasInitialized = store.getState().isInitialized
+      const wasInitialized = store.getState().isInitialized
     const previousEncryptionKey = store.getState().encryptionKey
     const previousEncryptedSeed = store.getState().encryptedSeed
 
@@ -277,7 +270,6 @@ export class WalletSetupService {
         )
       }
       
-      // Re-throw other errors as-is
       throw error
     } finally {
       // Restore previous state if wallet was already initialized
@@ -290,13 +282,11 @@ export class WalletSetupService {
               encryptionKey: previousEncryptionKey,
               encryptedSeed: previousEncryptedSeed,
             })
-          } else {
-            // If there was no previous state, reset
-            WorkletLifecycleService.reset()
-          }
-        } catch (restoreError) {
-          // If restore fails, reset to clean state
-          log('⚠️ Failed to restore previous wallet state after validation, resetting', restoreError)
+            } else {
+              WorkletLifecycleService.reset()
+            }
+          } catch (restoreError) {
+            log('⚠️ Failed to restore previous wallet state after validation, resetting', restoreError)
           WorkletLifecycleService.reset()
         }
       }
@@ -310,7 +300,7 @@ export class WalletSetupService {
    */
   static async createNewWallet(
     networkConfigs: NetworkConfigs,
-    identifier?: string
+    walletId?: string
   ): Promise<{
     encryptionKey: string
     encryptedSeed: string
@@ -341,7 +331,6 @@ export class WalletSetupService {
     const result = await WorkletLifecycleService.generateEntropyAndEncrypt(DEFAULT_MNEMONIC_WORD_COUNT)
 
     // Step 4: Validate encryption compatibility before saving to keychain
-    // This ensures we never persist corrupted data that cannot be decrypted
     log('🔍 Validating encryption compatibility before saving to keychain...')
     try {
       await this.validateEncryptionCompatibility(
@@ -357,15 +346,24 @@ export class WalletSetupService {
       throw error
     }
 
-    // Step 5: Store credentials securely with identifier for multi-wallet support
-    // Only save if validation passed
-    await secureStorage.setEncryptionKey(result.encryptionKey, identifier)
-    await secureStorage.setEncryptedSeed(result.encryptedSeedBuffer, identifier)
-    await secureStorage.setEncryptedEntropy(result.encryptedEntropyBuffer, identifier)
+    // Step 5: Store credentials securely with walletId for multi-wallet support
+    try {
+      await secureStorage.setEncryptionKey(result.encryptionKey, walletId)
+      await secureStorage.setEncryptedSeed(result.encryptedSeedBuffer, walletId)
+      await secureStorage.setEncryptedEntropy(result.encryptedEntropyBuffer, walletId)
+    } catch (error) {
+      // Clean up any partial writes (deleteWallet is idempotent)
+      try {
+        await secureStorage.deleteWallet(walletId)
+        log('[WalletSetupService] Cleaned up partial wallet creation after storage failure')
+      } catch (cleanupError) {
+        logError('[WalletSetupService] Failed to cleanup partial wallet creation:', cleanupError)
+      }
+      throw error
+    }
 
-    // Cache credentials in memory
     this.cacheCredentials(
-      identifier,
+      walletId,
       result.encryptionKey,
       result.encryptedSeedBuffer,
       result.encryptedEntropyBuffer
@@ -384,14 +382,14 @@ export class WalletSetupService {
    * Checks cache first, only requires biometric authentication if not cached
    */
   static async loadExistingWallet(
-    identifier?: string
+    walletId?: string
   ): Promise<{
     encryptionKey: string
     encryptedSeed: string
   }> {
     const secureStorage = this.getSecureStorage()
-    const cacheKey = this.getCacheKey(identifier)
-    const cached = this.credentialsCache.get(cacheKey)
+    const cacheKey = this.getCacheKey(walletId)
+    const cached = getCachedCredentials(cacheKey)
 
     // Check if all required credentials are cached
     if (cached?.encryptionKey && cached?.encryptedSeed) {
@@ -405,7 +403,7 @@ export class WalletSetupService {
     log('🔓 Loading existing wallet - biometric authentication required...')
     
     // Get encrypted seed first (doesn't require biometrics)
-    const encryptedSeed = await secureStorage.getEncryptedSeed(identifier)
+    const encryptedSeed = await secureStorage.getEncryptedSeed(walletId)
     
     // Try to get encryption key from cache first
     let encryptionKey = cached?.encryptionKey
@@ -414,7 +412,7 @@ export class WalletSetupService {
     if (!encryptionKey) {
       log('Encryption key not in cache, fetching from secureStorage...')
       try {
-        const allEncrypted = await secureStorage.getAllEncrypted(identifier)
+        const allEncrypted = await secureStorage.getAllEncrypted(walletId)
         encryptionKey = allEncrypted.encryptionKey || undefined
       } catch (error) {
         throw error
@@ -432,7 +430,7 @@ export class WalletSetupService {
     }
 
     // Cache credentials for future use
-    this.cacheCredentials(identifier, encryptionKey, encryptedSeed)
+    this.cacheCredentials(walletId, encryptionKey, encryptedSeed)
 
     log('✅ Wallet loaded successfully from secure storage')
     return {
@@ -444,9 +442,9 @@ export class WalletSetupService {
   /**
    * Check if a wallet exists
    */
-  static async hasWallet(identifier?: string): Promise<boolean> {
+  static async hasWallet(walletId?: string): Promise<boolean> {
     const secureStorage = this.getSecureStorage()
-    const result = await secureStorage.hasWallet(identifier)
+    const result = await secureStorage.hasWallet(walletId)
     return result
   }
 
@@ -458,7 +456,7 @@ export class WalletSetupService {
   static async initializeFromMnemonic(
     networkConfigs: NetworkConfigs,
     mnemonic: string,
-    identifier?: string
+    walletId?: string
   ): Promise<{
     encryptionKey: string
     encryptedSeed: string
@@ -490,7 +488,6 @@ export class WalletSetupService {
     const result = await WorkletLifecycleService.getSeedAndEntropyFromMnemonic(mnemonic)
 
     // Step 4: Validate encryption compatibility before saving to keychain
-    // This ensures we never persist corrupted data that cannot be decrypted
     log('🔍 Validating encryption compatibility before saving to keychain...')
     try {
       await this.validateEncryptionCompatibility(
@@ -506,22 +503,30 @@ export class WalletSetupService {
       throw error
     }
 
-    // Step 5: Store credentials securely with identifier for multi-wallet support
-    // Only save if validation passed
-    await secureStorage.setEncryptionKey(result.encryptionKey, identifier)
-    await secureStorage.setEncryptedSeed(result.encryptedSeedBuffer, identifier)
-    await secureStorage.setEncryptedEntropy(result.encryptedEntropyBuffer, identifier)
+    // Step 5: Store credentials securely with walletId for multi-wallet support
+    try {
+      await secureStorage.setEncryptionKey(result.encryptionKey, walletId)
+      await secureStorage.setEncryptedSeed(result.encryptedSeedBuffer, walletId)
+      await secureStorage.setEncryptedEntropy(result.encryptedEntropyBuffer, walletId)
+    } catch (error) {
+      // Clean up any partial writes (deleteWallet is idempotent)
+      try {
+        await secureStorage.deleteWallet(walletId)
+        log('[WalletSetupService] Cleaned up partial wallet import after storage failure')
+      } catch (cleanupError) {
+        logError('[WalletSetupService] Failed to cleanup partial wallet import:', cleanupError)
+      }
+      throw error
+    }
 
-    // Cache credentials in memory
     this.cacheCredentials(
-      identifier,
+      walletId,
       result.encryptionKey,
       result.encryptedSeedBuffer,
       result.encryptedEntropyBuffer
     )
 
     // Step 6: Initialize WDK with the credentials
-    // Note: This is safe now since validation already passed
     await WorkletLifecycleService.initializeWDK({
       encryptionKey: result.encryptionKey,
       encryptedSeed: result.encryptedSeedBuffer,
@@ -567,7 +572,7 @@ export class WalletSetupService {
     networkConfigs: NetworkConfigs,
     options: {
       createNew?: boolean
-      identifier?: string
+      walletId?: string
     }
   ): Promise<void> {
     const store = getWorkletStore()
@@ -581,13 +586,9 @@ export class WalletSetupService {
     let credentials: { encryptionKey: string; encryptedSeed: string }
 
     if (options.createNew) {
-      // Create new wallet
-      log('Creating new wallet...')
-      credentials = await this.createNewWallet(networkConfigs, options.identifier)
+      credentials = await this.createNewWallet(networkConfigs, options.walletId)
     } else {
-      // Load existing wallet (requires biometric authentication)
-      log('Loading existing wallet...')
-      credentials = await this.loadExistingWallet(options.identifier)
+      credentials = await this.loadExistingWallet(options.walletId)
     }
 
     // Initialize WDK with credentials
@@ -601,29 +602,29 @@ export class WalletSetupService {
    *                    If not provided, deletes the default wallet.
    */
   static async deleteWallet(
-    identifier?: string
+    walletId?: string
   ): Promise<void> {
     const secureStorage = this.getSecureStorage()
     
-    // Clear secure storage for the specified identifier
-    await secureStorage.deleteWallet(identifier)
+    // Clear secure storage for the specified walletId
+    await secureStorage.deleteWallet(walletId)
 
     // Reset store state
     WorkletLifecycleService.reset()
     
     // Clear credentials cache
-    this.clearCredentialsCache(identifier)
+    this.clearCredentialsCache(walletId)
   }
 
   /**
    * Get encryption key (checks cache first, then secureStorage with biometrics)
    */
   static async getEncryptionKey(
-    identifier?: string
+    walletId?: string
   ): Promise<string | null> {
     const secureStorage = this.getSecureStorage()
     return this.getCredential(
-      identifier,
+      walletId,
       'encryptionKey',
       async (id) => {
         const allEncrypted = await secureStorage.getAllEncrypted(id)
@@ -637,11 +638,11 @@ export class WalletSetupService {
    * Get encrypted seed (checks cache first, then secureStorage)
    */
   static async getEncryptedSeed(
-    identifier?: string
+    walletId?: string
   ): Promise<string | null> {
     const secureStorage = this.getSecureStorage()
     return this.getCredential(
-      identifier,
+      walletId,
       'encryptedSeed',
       (id) => secureStorage.getEncryptedSeed(id),
       'encryptedSeed'
@@ -652,11 +653,11 @@ export class WalletSetupService {
    * Get encrypted entropy (checks cache first, then secureStorage)
    */
   static async getEncryptedEntropy(
-    identifier?: string
+    walletId?: string
   ): Promise<string | null> {
     const secureStorage = this.getSecureStorage()
     return this.getCredential(
-      identifier,
+      walletId,
       'encryptedEntropy',
       (id) => secureStorage.getEncryptedEntropy(id),
       'encryptedEntropy'
@@ -667,14 +668,14 @@ export class WalletSetupService {
    * Get mnemonic phrase from wallet
    * Retrieves encrypted entropy and encryption key, then decrypts to get mnemonic
    * 
-   * @param identifier - Optional identifier for multi-wallet support
+   * @param walletId - Optional walletId for multi-wallet support
    * @returns Promise<string | null> - The mnemonic phrase or null if not found
    */
   static async getMnemonic(
-    identifier?: string
+    walletId?: string
   ): Promise<string | null> {
-    const encryptedEntropy = await this.getEncryptedEntropy(identifier)
-    const encryptionKey = await this.getEncryptionKey(identifier)
+    const encryptedEntropy = await this.getEncryptedEntropy(walletId)
+    const encryptionKey = await this.getEncryptionKey(walletId)
 
     if (!encryptedEntropy || !encryptionKey) {
       return null
@@ -692,17 +693,9 @@ export class WalletSetupService {
    * Clear all cached credentials
    * Should be called on logout or app background for security
    */
-  static clearCredentialsCache(identifier?: string): void {
-    if (identifier) {
-      const deleted = this.credentialsCache.delete(this.getCacheKey(identifier))
-      if (deleted) {
-        log('✅ Credentials cache cleared', { identifier })
-      }
-    } else {
-      const count = this.credentialsCache.size
-      this.credentialsCache.clear()
-      log('✅ All credentials cache cleared', { clearedCount: count })
-    }
+  static clearCredentialsCache(walletId?: string): void {
+    clearWorkletCredentialsCache(walletId ? this.getCacheKey(walletId) : undefined)
+    log('Credentials cache cleared', { walletId })
   }
 }
 

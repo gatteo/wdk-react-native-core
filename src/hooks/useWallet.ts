@@ -1,12 +1,56 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { AccountService } from '../services/accountService'
 import { AddressService } from '../services/addressService'
+import { WalletSwitchingService } from '../services/walletSwitchingService'
 import { getWalletStore } from '../store/walletStore'
 import { getWorkletStore } from '../store/workletStore'
+import { isOperationInProgress } from '../utils/operationMutex'
+import { log, logError } from '../utils/logger'
 import type { WalletStore } from '../store/walletStore'
 import type { WorkletStore } from '../store/workletStore'
+
+/**
+ * Check if wallet switching should be skipped
+ */
+function shouldSkipWalletSwitch(
+  requestedWalletId: string | undefined,
+  activeWalletId: string | null,
+  isSwitchingWallet: boolean,
+  switchingToWalletId: string | null
+): boolean {
+  // Skip if no walletId provided or walletId matches activeWalletId
+  if (!requestedWalletId || requestedWalletId === activeWalletId) {
+    return true
+  }
+
+  // Skip if already switching to this wallet
+  if (isSwitchingWallet && switchingToWalletId === requestedWalletId) {
+    return true
+  }
+
+  // Skip if switching to a different wallet (wait for current switch to complete)
+  if (isSwitchingWallet && switchingToWalletId !== requestedWalletId) {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Check if the requested wallet is a temporary wallet
+ */
+function isTemporaryWalletId(walletId: string | undefined): boolean {
+  return walletId === '__temporary__'
+}
+
+/**
+ * Normalize error to Error instance
+ */
+function normalizeErrorToError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error))
+}
 
 /**
  * Hook to interact with wallet data (addresses and account methods)
@@ -14,30 +58,37 @@ import type { WorkletStore } from '../store/workletStore'
  * PURPOSE: Use this hook for wallet operations AFTER the wallet has been initialized.
  * This hook provides access to wallet addresses and account methods.
  * 
- * **Balance Fetching**: Use `useBalance()` hook for fetching balances with TanStack Query.
- * 
- * For wallet initialization/setup (creating, loading, deleting wallets), use
- * the `useWalletManager()` hook instead.
+ * When to use which hook:
+ * - **App initialization state**: Use `useWdkApp()` to check if app is ready
+ * - **Wallet lifecycle** (create, load, import, delete): Use `useWalletManager()`
+ * - **Wallet operations** (addresses, account methods): Use this hook (`useWallet()`)
+ * - **Balance fetching**: Use `useBalance()` hook with TanStack Query
  * 
  * @example
  * ```tsx
- * // Addresses (from Zustand - derived state)
- * const { addresses, getAddress, isLoadingAddress, isInitialized } = useWallet()
+ * // First, check if app is ready
+ * const { isReady } = useWdkApp()
+ * if (!isReady) return <LoadingScreen />
  * 
- * // Balances - Use useBalance hook for fetching
- * import { useBalance } from '@tetherto/wdk-react-native-core'
- * const { data: balance } = useBalance('ethereum', 0, null)
+ * // Then use wallet operations
+ * const { addresses, getAddress, callAccountMethod } = useWallet()
  * 
- * // Account methods
- * const { callAccountMethod } = useWallet()
- * await callAccountMethod('ethereum', 0, 'signMessage', { message: 'Hello' })
+ * // Use specific wallet (automatically switches if needed)
+ * const { addresses, getAddress } = useWallet({ walletId: 'user@example.com' })
+ * 
+ * // Note: For creating temporary wallets, use useWalletManager().createTemporaryWallet()
  * ```
  */
 export interface UseWalletResult {
   // State (reactive)
-  addresses: WalletStore['addresses']
-  walletLoading: WalletStore['walletLoading']
+  addresses: Record<string, Record<number, string>>  // network -> accountIndex -> address (for current wallet)
+  walletLoading: Record<string, boolean>  // loading states for current wallet
   isInitialized: boolean
+  // Switching state
+  isSwitchingWallet: boolean
+  switchingToWalletId: string | null
+  switchWalletError: Error | null
+  isTemporaryWallet: boolean
   // Computed helpers
   getNetworkAddresses: (network: string) => Record<number, string>
   isLoadingAddress: (network: string, accountIndex?: number) => boolean
@@ -51,52 +102,141 @@ export interface UseWalletResult {
   ) => Promise<T>
 }
 
-export function useWallet(): UseWalletResult {
+export function useWallet(options?: {
+  walletId?: string
+}): UseWalletResult {
   const workletStore = getWorkletStore()
   const walletStore = getWalletStore()
 
-  // Subscribe to state changes using consolidated selectors to minimize re-renders
-  // Use useShallow to prevent infinite loops when selector returns new object
-  // useShallow is a hook and must be called at the top level (not inside useMemo)
-  const walletSelector = useShallow((state: WalletStore) => ({
-    addresses: state.addresses,
-    walletLoading: state.walletLoading,
-  }))
+  // Switching state
+  const [isSwitchingWallet, setIsSwitchingWallet] = useState(false)
+  const [switchingToWalletId, setSwitchingToWalletId] = useState<string | null>(null)
+  const [switchWalletError, setSwitchWalletError] = useState<Error | null>(null)
+  const [isTemporaryWallet, setIsTemporaryWallet] = useState(false)
+
+  // Get activeWalletId and networkConfigs from stores
+  const activeWalletId = walletStore((state: WalletStore) => state.activeWalletId)
+  const networkConfigs = workletStore((state: WorkletStore) => state.networkConfigs)
+
+  // Determine target walletId
+  const targetWalletId = options?.walletId || activeWalletId
+
+  // Subscribe to wallet state for target wallet
+  const walletSelector = useShallow((state: WalletStore) => {
+    const walletId = options?.walletId || state.activeWalletId
+    if (!walletId) {
+      return {
+        addresses: {},
+        walletLoading: {},
+      }
+    }
+    return {
+      addresses: state.addresses[walletId] || {},
+      walletLoading: state.walletLoading[walletId] || {},
+    }
+  })
   const walletState = walletStore(walletSelector)
   const isInitialized = workletStore((state: WorkletStore) => state.isInitialized)
 
+  // Automatic wallet switching logic
+  useEffect(() => {
+    const requestedWalletId = options?.walletId
+
+    // Skip if switching should be skipped
+    if (shouldSkipWalletSwitch(requestedWalletId, activeWalletId, isSwitchingWallet, switchingToWalletId)) {
+      setIsTemporaryWallet(false)
+      return
+    }
+
+    // Check if another operation is in progress (via mutex)
+    if (isOperationInProgress()) {
+      log('[useWallet] Operation in progress, skipping wallet switch')
+      return
+    }
+
+    // Handle temporary wallet identifier
+    if (isTemporaryWalletId(requestedWalletId)) {
+      setIsTemporaryWallet(true)
+      return
+    }
+
+    let cancelled = false
+
+    const switchWallet = async () => {
+      setIsSwitchingWallet(true)
+      setSwitchingToWalletId(requestedWalletId!)
+      setSwitchWalletError(null)
+
+      try {
+        // Use WalletSwitchingService for wallet switching logic (has mutex protection)
+        await WalletSwitchingService.switchToWallet(requestedWalletId!, {
+          autoStartWorklet: false,
+        })
+
+        if (!cancelled) {
+          setIsTemporaryWallet(false)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          const err = normalizeErrorToError(error)
+          logError('[useWallet] Failed to switch wallet:', error)
+          setSwitchWalletError(err)
+          // Don't update activeWalletId if switch failed
+        }
+      } finally {
+        if (!cancelled) {
+          setIsSwitchingWallet(false)
+          setSwitchingToWalletId(null)
+        }
+      }
+    }
+
+    switchWallet()
+
+    // Cleanup function to cancel in-flight operations
+    return () => {
+      cancelled = true
+    }
+  }, [options?.walletId, activeWalletId, isSwitchingWallet, switchingToWalletId])
+
+
   // Get all addresses for a specific network
-  const getNetworkAddresses = (network: string) => {
+  const getNetworkAddresses = useCallback((network: string) => {
     return walletState.addresses[network] || {}
-  }
+  }, [walletState.addresses])
 
   // Check if an address is loading
-  const isLoadingAddress = (network: string, accountIndex: number = 0) => {
+  const isLoadingAddress = useCallback((network: string, accountIndex: number = 0) => {
     return walletState.walletLoading[`${network}-${accountIndex}`] || false
-  }
+  }, [walletState.walletLoading])
 
   // Get a specific address (from cache or fetch)
-  // Wrapped in useCallback to ensure stable function reference across renders
   const getAddress = useCallback(async (network: string, accountIndex: number = 0) => {
-    return AddressService.getAddress(network, accountIndex)
-  }, [])
+    const walletId = targetWalletId || '__temporary__'
+    return AddressService.getAddress(network, accountIndex, walletId)
+  }, [targetWalletId])
 
   // Call a method on a wallet account
-  // Wrapped in useCallback to ensure stable function reference across renders
   const callAccountMethod = useCallback(async <T = unknown>(
     network: string,
     accountIndex: number,
     methodName: string,
     args?: unknown
   ): Promise<T> => {
-    return AccountService.callAccountMethod<T>(network, accountIndex, methodName, args)
-  }, [])
+    const walletId = targetWalletId || '__temporary__'
+    return AccountService.callAccountMethod<T>(network, accountIndex, methodName, args, walletId)
+  }, [targetWalletId])
 
   return {
     // State (reactive)
     addresses: walletState.addresses,
     walletLoading: walletState.walletLoading,
     isInitialized,
+    // Switching state
+    isSwitchingWallet,
+    switchingToWalletId,
+    switchWalletError,
+    isTemporaryWallet,
     // Computed helpers
     getNetworkAddresses,
     isLoadingAddress,

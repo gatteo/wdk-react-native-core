@@ -1,21 +1,25 @@
 /**
  * WdkAppProvider
  *
- * App-level orchestration provider that composes existing WDK hooks.
- * Manages the complete initialization flow:
- * 1. Start worklet immediately on app open (global, happens once)
- * 2. Load wallets (per-identifier, can have multiple)
+ * App-level orchestration provider that manages initialization state.
+ * Provides app-level status and initialization state via useWdkApp() hook.
+ *
+ * Responsibilities:
+ * - Manages worklet initialization state
+ * - Manages wallet initialization state
+ * - Provides combined app status (isReady, isInitializing, error)
+ * - Sets up QueryClientProvider for TanStack Query
+ * - Sets up SecureStorage
+ * - Handles AppState listeners for security
  *
  * Architecture:
  * - Worklet state: Managed by workletStore (global, initialized once)
  * - Wallet state: Managed by separate state machine (per-identifier, can load multiple)
  * - Combined status: Derived from both worklet and wallet states
- *
- * This provider is generic and reusable - it doesn't know about app-specific
- * concerns like auth state or UI branding.
  */
 
-import React, { createContext, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import React, { createContext, useCallback, useEffect, useMemo } from 'react'
+import { AppState, type AppStateStatus } from 'react-native'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { createSecureStorage } from '@tetherto/wdk-react-native-secure-storage'
@@ -26,12 +30,29 @@ import { useWalletManager } from '../hooks/useWalletManager'
 import { useWorklet } from '../hooks/useWorklet'
 import { getWalletStore } from '../store/walletStore'
 import type { WalletStore } from '../store/walletStore'
+import { 
+  updateWalletLoadingState, 
+  getWalletIdFromLoadingState,
+  isWalletLoadingState,
+  isWalletReadyState,
+  isWalletErrorState,
+  type WalletLoadingState
+} from '../store/walletStore'
+import {
+  shouldResetToNotLoaded,
+  getWalletSwitchDecision,
+  shouldMarkWalletAsReady,
+  shouldHandleError,
+} from '../utils/walletStateHelpers'
+import { clearAllSensitiveData } from '../store/workletStore'
 import { WalletSetupService } from '../services/walletSetupService'
+import { WorkletLifecycleService } from '../services/workletLifecycleService'
 import { isAuthenticationError, normalizeError } from '../utils/errorUtils'
 import { log, logError, logWarn } from '../utils/logger'
 import { validateNetworkConfigs, validateTokenConfigs } from '../utils/validation'
-import { InitializationStatus, isReadyStatus, isInProgressStatus, getCombinedStatus } from '../utils/initializationState'
-import { walletReducer, type WalletState } from '../utils/walletState'
+import { DEFAULT_QUERY_STALE_TIME_MS, DEFAULT_QUERY_GC_TIME_MS } from '../utils/constants'
+import { InitializationStatus, AppStatus, isAppReadyStatus, isAppInProgressStatus, getCombinedStatus, getWorkletStatus } from '../utils/initializationState'
+import { useShallow } from 'zustand/react/shallow'
 import type { NetworkConfigs, TokenConfigs } from '../types'
 
 
@@ -39,33 +60,73 @@ import type { NetworkConfigs, TokenConfigs } from '../types'
 /**
  * Context state exposed to consumers
  * 
- * Use the `status` enum as the primary way to check initialization state.
- * Helper functions like `isReadyStatus()`, `isInProgressStatus()`, etc. are available
- * from the InitializationStatus utilities.
+ * Purpose: App-level initialization state only. For wallet operations, use useWallet().
+ * For wallet lifecycle (create, load, import, delete), use useWalletManager().
+ * 
+ * API Design:
+ * - `status`: Combined status for convenience (most common use case: "is app ready?")
+ * - `workletState`: Separate worklet state for flexibility (check worklet-specific conditions)
+ * - `walletState`: Separate wallet state for flexibility (check wallet-specific conditions)
+ * 
+ * For simple cases, use `status`. For advanced cases needing granular control,
+ * use `workletState` and `walletState` directly.
  */
 export interface WdkAppContextValue {
-  /** Unified initialization status - use this as the single source of truth */
-  status: InitializationStatus
+  /** 
+   * Combined app status (convenience helper)
+   * Derived from workletState and walletState.
+   * Use this for common "is app ready?" checks.
+   */
+  status: AppStatus
+  
+  /** 
+   * Worklet initialization status (global, initialized once)
+   * Use this when you need to check worklet initialization state specifically.
+   */
+  workletStatus: InitializationStatus
+  
+  /** 
+   * Worklet state (global, initialized once)
+   * Use this when you need to check worklet-specific conditions.
+   */
+  workletState: {
+    /** Worklet is ready (started, not loading, no error) */
+    isReady: boolean
+    /** Worklet is currently loading */
+    isLoading: boolean
+    /** Worklet error message (null if no error) */
+    error: string | null
+  }
+  
+  /** 
+   * Wallet state (per-identifier, can load multiple wallets)
+   * Use this when you need to check wallet-specific conditions.
+   */
+  walletState: {
+    /** Current wallet state */
+    status: 'not_loaded' | 'checking' | 'loading' | 'ready' | 'error'
+    /** Wallet identifier being operated on (null if not_loaded) */
+    identifier: string | null
+    /** Wallet error (null if no error) */
+    error: Error | null
+  }
+  
   /** Initialization in progress (convenience getter, equivalent to isInProgressStatus(status)) */
   isInitializing: boolean
+  /** App is ready (convenience getter, equivalent to isReadyStatus(status)) */
+  isReady: boolean
+  
   /** Currently active wallet identifier from walletStore (null if no wallet is loaded) */
   activeWalletId: string | null
   /** Wallet identifier being loaded (transient, only during loading operations) */
   loadingWalletId: string | null
   /** Whether the wallet being loaded exists in secure storage (null = not checked yet, true = exists, false = doesn't exist) */
   walletExists: boolean | null
-  /** Initialization error if any (worklet or wallet error) */
+  /** Initialization error if any (worklet or wallet error) - convenience getter */
   error: Error | null
+  
   /** Retry initialization after an error */
   retry: () => void
-  /** Load existing wallet from storage (only if wallet exists, throws error if it doesn't) */
-  loadExisting: (identifier: string) => Promise<void>
-  /** Create and initialize a new wallet */
-  createNew: (identifier?: string) => Promise<void>
-  /** Balance fetching is in progress (deprecated - use useBalance hook's isLoading instead) */
-  isFetchingBalances: boolean
-  /** Refresh all balances manually (deprecated - use useRefreshBalance() hook instead) */
-  refreshBalances: () => Promise<void>
 }
 
 const WdkAppContext = createContext<WdkAppContextValue | null>(null)
@@ -96,8 +157,8 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: 1,
-      staleTime: 30 * 1000, // 30 seconds
-      gcTime: 5 * 60 * 1000, // 5 minutes (formerly cacheTime)
+      staleTime: DEFAULT_QUERY_STALE_TIME_MS,
+      gcTime: DEFAULT_QUERY_GC_TIME_MS,
     },
   },
 })
@@ -115,6 +176,18 @@ export function WdkAppProvider({
     WalletSetupService.setSecureStorage(secureStorage)
   }, [secureStorage])
 
+  // Clear sensitive data when app goes to background
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'background' || nextAppState === 'inactive') {
+        clearAllSensitiveData()
+        log('[WdkAppProvider] Cleared sensitive data on app background')
+      }
+    })
+    
+    return () => subscription.remove()
+  }, [])
+
   // Validate props on mount and when props change
   useEffect(() => {
     try {
@@ -129,37 +202,66 @@ export function WdkAppProvider({
   }, [networkConfigs, tokenConfigs])
 
   // Worklet state - read from workletStore via hook
-  const workletState = useWorklet()
+  const workletHookState = useWorklet()
   const {
     isWorkletStarted,
     isInitialized: isWorkletInitialized,
     isLoading: isWorkletLoading,
     error: workletError,
-    startWorklet,
-  } = workletState
+  } = workletHookState
 
-  // Wallet state - separate state machine
-  const [walletState, dispatchWallet] = useReducer(walletReducer, { type: 'not_loaded' })
-
-  // Active wallet ID - read from walletStore (single source of truth)
+  // Wallet state - read from walletStore (single source of truth)
   const walletStore = getWalletStore()
-  const activeWalletId = walletStore((state: WalletStore) => state.activeWalletId)
+  
+  // Subscribe to wallet state using shallow comparison
+  const walletStateSlice = walletStore(
+    useShallow((state: WalletStore) => ({
+      activeWalletId: state.activeWalletId,
+      walletLoadingState: state.walletLoadingState,
+      addresses: state.activeWalletId ? state.addresses[state.activeWalletId] : undefined,
+    }))
+  )
+  
+  const { activeWalletId, walletLoadingState, addresses: walletAddresses } = walletStateSlice
 
   // Hooks for wallet operations
   const {
-    initializeWallet,
-    hasWallet,
-    isInitializing: isWalletInitializing,
+    error: walletManagerError,
   } = useWalletManager(networkConfigs)
 
-  // Get wallet state to check if worklet is initialized (needed for wallet operations)
-  const { isInitialized: isWorkletInitializedForWallet } = useWallet()
+  // Derive isWalletInitializing from walletLoadingState (single source of truth)
+  const isWalletInitializing = useMemo(() => {
+    return isWalletLoadingState(walletLoadingState)
+  }, [walletLoadingState])
 
-  const cancelledRef = useRef(false)
-  const lastAuthErrorRef = useRef<number | null>(null)
-  const AUTH_ERROR_COOLDOWN_MS = 3000 // 3 seconds
+  // Worklet state object (exposed separately for flexibility)
+  const workletState = useMemo(() => ({
+    isReady: isWorkletStarted && !isWorkletLoading && !workletError,
+    isLoading: isWorkletLoading,
+    error: workletError,
+  }), [isWorkletStarted, isWorkletLoading, workletError])
 
-  // Combined status - derived from both worklet and wallet states
+  // Wallet state object (exposed separately for flexibility)
+  const walletStateObject = useMemo(() => ({
+    status: (walletLoadingState.type === 'not_loaded' ? 'not_loaded' :
+            walletLoadingState.type === 'checking' ? 'checking' :
+            walletLoadingState.type === 'loading' ? 'loading' :
+            walletLoadingState.type === 'ready' ? 'ready' :
+            'error') as 'not_loaded' | 'checking' | 'loading' | 'ready' | 'error',
+    identifier: getWalletIdFromLoadingState(walletLoadingState),
+    error: walletLoadingState.type === 'error' ? walletLoadingState.error : null,
+  }), [walletLoadingState])
+
+  // Worklet initialization status (worklet-specific)
+  const workletStatus = useMemo(() => {
+    return getWorkletStatus({
+      isWorkletStarted,
+      isLoading: isWorkletLoading,
+      error: workletError,
+    })
+  }, [isWorkletStarted, isWorkletLoading, workletError])
+
+  // Combined app status - derived from both worklet and wallet states (convenience)
   const status = useMemo(() => {
     return getCombinedStatus(
       {
@@ -167,11 +269,11 @@ export function WdkAppProvider({
         isLoading: isWorkletLoading,
         error: workletError,
       },
-      walletState
+      walletLoadingState
     )
-  }, [isWorkletStarted, isWorkletLoading, workletError, walletState])
+  }, [isWorkletStarted, isWorkletLoading, workletError, walletLoadingState])
 
-  // Initialize worklet when component mounts
+  // Automatically initialize worklet when component mounts
   useEffect(() => {
     log('[WdkAppProvider] Checking initialization conditions', {
       isWorkletInitialized,
@@ -191,260 +293,156 @@ export function WdkAppProvider({
       return
     }
 
-    cancelledRef.current = false
+    let cancelled = false
 
     const initializeWorklet = async () => {
       try {
         log('[WdkAppProvider] Starting worklet initialization...')
-        await startWorklet(networkConfigs)
-
-        if (cancelledRef.current) return
-        log('[WdkAppProvider] Worklet started successfully')
+        await WorkletLifecycleService.startWorklet(networkConfigs)
+        if (!cancelled) {
+          log('[WdkAppProvider] Worklet started successfully')
+        }
       } catch (error) {
-        if (cancelledRef.current) return
-
-        const err = normalizeError(error, true, {
-          component: 'WdkAppProvider',
-          operation: 'workletInitialization',
-        })
-        logError('[WdkAppProvider] Failed to initialize worklet:', error)
+        if (!cancelled) {
+          const err = normalizeError(error, true, {
+            component: 'WdkAppProvider',
+            operation: 'workletInitialization',
+          })
+          logError('[WdkAppProvider] Failed to initialize worklet:', error)
+        }
       }
     }
 
     initializeWorklet()
 
+    // Cleanup function to prevent state updates if component unmounts
     return () => {
-      cancelledRef.current = true
+      cancelled = true
     }
-  }, [isWorkletInitialized, isWorkletLoading, isWorkletStarted, networkConfigs, startWorklet])
+  }, [isWorkletInitialized, isWorkletLoading, isWorkletStarted, networkConfigs])
 
-  // Update wallet state when wallet becomes initialized externally
+
+  // Consolidated effect: Sync wallet loading state with activeWalletId, addresses, and errors
+  // 
+  // IMPORTANT: This effect MUST remain consolidated to prevent race conditions.
+  // Multiple interdependent state changes (activeWalletId, addresses, loadingState, errors)
+  // must be evaluated atomically in a single effect. Splitting into multiple effects would
+  // allow them to run with stale state, causing race conditions.
+  //
+  // State synchronization logic:
+  // 1. If activeWalletId is cleared, reset to not_loaded
+  // 2. If activeWalletId changes, handle wallet switch (check if addresses exist)
+  // 3. If wallet has addresses but state is not_loaded, mark as ready
+  // 4. If wallet is loading and addresses appear, mark as ready (initialization complete)
+  // 5. If error occurs, update error state (only if tracking the correct wallet)
+  //
+  // All conditions are checked in order with early returns to ensure atomic evaluation.
   useEffect(() => {
-    if (isWorkletInitializedForWallet && walletState.type === 'loading') {
-      // Wallet initialization completed - update state
-      dispatchWallet({ type: 'WALLET_LOADED', identifier: walletState.identifier })
-    }
-  }, [isWorkletInitializedForWallet, walletState])
-
-  // Helper to check prerequisites and handle cooldown
-  const checkPrerequisites = useCallback(async (identifier: string): Promise<void> => {
-    if (!isWorkletStarted) {
-      throw new Error('Worklet must be started before initializing wallet')
-    }
-
-    // Check if switching wallets (different identifier than currently loaded)
-    const isSwitchingWallet = activeWalletId !== null && activeWalletId !== identifier
-    if (isSwitchingWallet) {
-      log('[WdkAppProvider] Switching wallets', { from: activeWalletId, to: identifier })
-      // Clear previous wallet's credentials cache
-      WalletSetupService.clearCredentialsCache(activeWalletId)
-    }
-
-    // If wallet is already loaded and it's the same identifier, skip
-    if (isWorkletInitializedForWallet && activeWalletId === identifier) {
-      log('[WdkAppProvider] Wallet already initialized', { identifier })
+    const currentWalletId = getWalletIdFromLoadingState(walletLoadingState)
+    const hasAddresses = !!(walletAddresses && Object.keys(walletAddresses).length > 0)
+    
+    // Handle activeWalletId cleared
+    if (shouldResetToNotLoaded(activeWalletId, walletLoadingState)) {
+      log('[WdkAppProvider] Active wallet cleared, resetting wallet state')
+      walletStore.setState((prev) => updateWalletLoadingState(prev, { type: 'not_loaded' }))
       return
     }
 
-    // Check cooldown period for authentication errors
-    if (lastAuthErrorRef.current !== null) {
-      const timeSinceError = Date.now() - lastAuthErrorRef.current
-      if (timeSinceError < AUTH_ERROR_COOLDOWN_MS) {
-        throw new Error(`Skipping initialization - cooldown period active (${AUTH_ERROR_COOLDOWN_MS - timeSinceError}ms remaining)`)
-      }
+    // Ensure activeWalletId is not null before proceeding (shouldn't happen after check above, but TypeScript needs it)
+    if (!activeWalletId) {
+      return
     }
 
-    // Check wallet existence for the given identifier
-    log('[WdkAppProvider] Checking if wallet exists...', { identifier })
-    dispatchWallet({ type: 'CHECK_WALLET', identifier })
-    try {
-      const walletExistsResult = await hasWallet(identifier)
-      dispatchWallet({ type: 'WALLET_CHECKED', identifier, exists: walletExistsResult })
-    } catch (error) {
-      logError('[WdkAppProvider] Failed to check wallet:', error)
-      dispatchWallet({ type: 'WALLET_ERROR', identifier, error: normalizeError(error, true, { component: 'WdkAppProvider', operation: 'checkWallet' }) })
-      throw error
-    }
-  }, [isWorkletStarted, isWorkletInitializedForWallet, hasWallet, activeWalletId])
-
-  // Load existing wallet from storage
-  const loadExisting = useCallback(async (identifier: string): Promise<void> => {
-    await checkPrerequisites(identifier)
-
-    // Get walletExists from wallet state
-    const walletExists = walletState.type === 'loading' ? walletState.walletExists : null
-    
-    if (walletExists === false) {
-      throw new Error(`Cannot load existing wallet - wallet with identifier "${identifier}" does not exist`)
-    }
-
-    // Start loading if not already in loading state
-    if (walletState.type !== 'loading') {
-      dispatchWallet({ type: 'START_LOADING', identifier, walletExists: walletExists ?? true })
-    }
-
-    try {
-      log('[WdkAppProvider] Loading existing wallet from secure storage...', { identifier })
-      await initializeWallet({ createNew: false, identifier })
-      
-      // Update walletStore (single source of truth)
-      walletStore.setState({ activeWalletId: identifier })
-      
-      log('[WdkAppProvider] Wallet loaded successfully', { identifier })
-      dispatchWallet({ type: 'WALLET_LOADED', identifier })
-    } catch (error) {
-      const err = normalizeError(error, true, {
-        component: 'WdkAppProvider',
-        operation: 'loadExisting',
+    // Handle wallet switching (activeWalletId changed to different wallet)
+    const switchDecision = getWalletSwitchDecision(currentWalletId, activeWalletId, hasAddresses)
+    if (switchDecision.shouldSwitch) {
+      log('[WdkAppProvider] Active wallet changed', {
+        from: currentWalletId,
+        to: activeWalletId,
       })
       
-      const errorMessage = err.message.toLowerCase()
-      const isDecryptionError = 
-        errorMessage.includes('decryption failed') ||
-        errorMessage.includes('failed to decrypt') ||
-        errorMessage.includes('decrypt seed')
-      
-      // Handle decryption errors by cleaning up corrupted wallet data
-      if (isDecryptionError) {
-        logError('[WdkAppProvider] Decryption failed - wallet data may be corrupted. Cleaning up...', error)
-        
-        try {
-          WalletSetupService.clearCredentialsCache(identifier)
-          log('[WdkAppProvider] Cleared credentials cache for corrupted wallet')
-          
-          try {
-            await secureStorage.deleteWallet(identifier)
-            log('[WdkAppProvider] Deleted corrupted wallet data from keychain')
-          } catch (deleteError) {
-            logWarn('[WdkAppProvider] Failed to delete corrupted wallet data from keychain', deleteError)
-          }
-          
-          const cleanupError = new Error(
-            `Failed to decrypt wallet: The stored wallet data appears to be corrupted or encrypted with a different key. ` +
-            `Corrupted data has been cleaned up. Error: ${err.message}`
-          )
-          cleanupError.name = err.name || 'DecryptionError'
-          
-          dispatchWallet({ type: 'WALLET_ERROR', identifier, error: cleanupError })
-          throw cleanupError
-        } catch (cleanupError) {
-          logError('[WdkAppProvider] Error during cleanup of corrupted wallet data', cleanupError)
-          dispatchWallet({ type: 'WALLET_ERROR', identifier, error: err })
-          throw err
-        }
-      }
-      
-      if (isAuthenticationError(err)) {
-        lastAuthErrorRef.current = Date.now()
-      }
-      
-      logError('[WdkAppProvider] Failed to load existing wallet:', error)
-      dispatchWallet({ type: 'WALLET_ERROR', identifier, error: err })
-      throw err
-    }
-  }, [checkPrerequisites, walletState, initializeWallet, secureStorage, walletStore])
-
-  // Create and initialize a new wallet
-  const createNew = useCallback(async (identifier?: string): Promise<void> => {
-    const targetIdentifier = identifier || 'default'
-    
-    // Handle ERROR state - reset wallet state if worklet is started
-    if (walletState.type === 'error' && isWorkletStarted) {
-      log('[WdkAppProvider] Recovering from error state, resetting wallet state')
-      dispatchWallet({ type: 'RESET' })
+      walletStore.setState((prev) => updateWalletLoadingState(prev, { 
+        type: switchDecision.shouldMarkReady ? 'ready' : 'not_loaded',
+        identifier: activeWalletId 
+      }))
+      return
     }
 
-    await checkPrerequisites(targetIdentifier)
+    // Handle ready state transitions
+    if (shouldMarkWalletAsReady(walletLoadingState, hasAddresses, currentWalletId, activeWalletId)) {
+      log('[WdkAppProvider] Wallet ready', { activeWalletId })
+      walletStore.setState((prev) => updateWalletLoadingState(prev, { 
+        type: 'ready', 
+        identifier: activeWalletId 
+      }))
+      return
+    }
 
-    // Start loading
-    dispatchWallet({ type: 'START_LOADING', identifier: targetIdentifier, walletExists: false })
-
-    try {
-      log('[WdkAppProvider] Creating new wallet...', { identifier: targetIdentifier })
-      await initializeWallet({ createNew: true, identifier: targetIdentifier })
-      
-      // Update walletStore (single source of truth)
-      walletStore.setState({ activeWalletId: targetIdentifier })
-      
-      log('[WdkAppProvider] New wallet created and initialized successfully', { identifier: targetIdentifier })
-      dispatchWallet({ type: 'WALLET_LOADED', identifier: targetIdentifier })
-    } catch (error) {
-      const err = normalizeError(error, true, {
-        component: 'WdkAppProvider',
-        operation: 'createNew',
+    // Handle errors from useWalletManager
+    if (shouldHandleError(walletManagerError, currentWalletId, activeWalletId, walletLoadingState)) {
+      log('[WdkAppProvider] Wallet operation error detected', { 
+        activeWalletId, 
+        error: walletManagerError 
       })
-      logError('[WdkAppProvider] Failed to create new wallet:', error)
-      
-      if (isAuthenticationError(err)) {
-        lastAuthErrorRef.current = Date.now()
-      }
-      
-      dispatchWallet({ type: 'WALLET_ERROR', identifier: targetIdentifier, error: err })
-      throw err
+      const error = new Error(walletManagerError!)
+      walletStore.setState((prev) => updateWalletLoadingState(prev, { 
+        type: 'error', 
+        identifier: activeWalletId, 
+        error 
+      }))
     }
-  }, [checkPrerequisites, initializeWallet, walletState, isWorkletStarted, walletStore])
+  }, [activeWalletId, walletLoadingState, walletAddresses, walletManagerError, isWalletInitializing, walletStore])
 
   // Retry initialization
   const retry = useCallback(() => {
     log('[WdkAppProvider] Retrying initialization...')
-    lastAuthErrorRef.current = null
-    // Reset wallet state if in error
-    if (walletState.type === 'error') {
-      dispatchWallet({ type: 'RESET' })
+    if (isWalletErrorState(walletLoadingState)) {
+      walletStore.setState((prev) => updateWalletLoadingState(prev, { type: 'not_loaded' }))
     }
-    cancelledRef.current = false
-  }, [walletState.type])
+  }, [walletLoadingState, walletStore])
 
-  // Convenience getter for initialization state
-  const isInitializing = useMemo(() => isInProgressStatus(status), [status])
+  // Convenience getters
+  const isInitializing = useMemo(() => isAppInProgressStatus(status), [status])
+  const isReady = useMemo(() => isAppReadyStatus(status), [status])
 
   // Get wallet error from wallet state
-  const walletError = walletState.type === 'error' ? walletState.error : null
+  const walletError = walletLoadingState.type === 'error' ? walletLoadingState.error : null
   const initializationError = workletError ? new Error(workletError) : walletError
 
   // Get walletExists from wallet state
   const walletExists = useMemo(() => {
-    if (walletState.type === 'loading') {
-      return walletState.walletExists
+    if (walletLoadingState.type === 'loading') {
+      return walletLoadingState.walletExists
     }
-    if (walletState.type === 'ready') {
+    if (walletLoadingState.type === 'ready') {
       return true // Wallet is loaded, so it exists
     }
     return null
-  }, [walletState])
+  }, [walletLoadingState])
 
   // Loading wallet ID (transient, during loading operations)
   const loadingWalletId = useMemo(() => {
-    if (walletState.type === 'checking' || walletState.type === 'loading') {
-      return walletState.identifier
+    if (walletLoadingState.type === 'checking' || walletLoadingState.type === 'loading') {
+      return walletLoadingState.identifier
     }
     return null
-  }, [walletState])
-
-  // Balance fetching is now handled by TanStack Query via useBalance hooks
-  // No need for manual balance sync - balances are automatically fetched and cached
-  // Users can use useBalance() hook to fetch balances with automatic refetching
-  const isFetchingBalances = false // Deprecated - use useBalance hook's isLoading instead
-  const refreshBalances = async () => {
-    // Deprecated - use useRefreshBalance() hook instead
-    logError('[WdkAppProvider] refreshBalances is deprecated. Use useRefreshBalance() hook instead.')
-  }
+  }, [walletLoadingState])
 
   const contextValue: WdkAppContextValue = useMemo(
     () => ({
       status,
+      workletStatus,
+      workletState,
+      walletState: walletStateObject,
       isInitializing,
+      isReady,
       activeWalletId,
       loadingWalletId,
       walletExists,
       error: initializationError,
       retry,
-      loadExisting,
-      createNew,
-      isFetchingBalances,
-      refreshBalances,
     }),
-    [status, isInitializing, activeWalletId, loadingWalletId, walletExists, initializationError, retry, loadExisting, createNew, isFetchingBalances, refreshBalances]
+    [status, workletStatus, workletState, walletStateObject, isInitializing, isReady, activeWalletId, loadingWalletId, walletExists, initializationError, retry]
   )
 
   return (

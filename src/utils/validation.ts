@@ -6,6 +6,7 @@
  * For type guards (boolean returns), see typeGuards.ts
  */
 
+import { z } from 'zod'
 import {
   networkConfigsSchema,
   tokenConfigsSchema,
@@ -17,16 +18,31 @@ import {
 import type { NetworkConfigs, TokenConfigs } from '../types'
 
 /**
+ * Extract error message from Zod error
+ */
+function getZodErrorMessage(error: unknown): string {
+  if (error instanceof z.ZodError) {
+    // Get the first error message for simplicity
+    const firstIssue = error.issues[0]
+    if (firstIssue) {
+      return firstIssue.message
+    }
+    return 'Validation failed'
+  }
+  if (error instanceof Error) {
+    return error.message
+  }
+  return String(error)
+}
+
+/**
  * Validate network configuration
  */
 export function validateNetworkConfigs(networkConfigs: NetworkConfigs): void {
   try {
     networkConfigsSchema.parse(networkConfigs)
   } catch (error) {
-    if (error instanceof Error) {
-      throw new Error(`Invalid networkConfigs: ${error.message}`)
-    }
-    throw new Error('networkConfigs must be a valid NetworkConfigs object')
+    throw new Error(`Invalid networkConfigs: ${getZodErrorMessage(error)}`)
   }
 }
 
@@ -37,10 +53,7 @@ export function validateTokenConfigs(tokenConfigs: TokenConfigs): void {
   try {
     tokenConfigsSchema.parse(tokenConfigs)
   } catch (error) {
-    if (error instanceof Error) {
-      throw new Error(`Invalid tokenConfigs: ${error.message}`)
-    }
-    throw new Error('tokenConfigs must be a valid TokenConfigs object')
+    throw new Error(`Invalid tokenConfigs: ${getZodErrorMessage(error)}`)
   }
 }
 
@@ -91,10 +104,8 @@ export function validateAccountIndex(accountIndex: number): void {
   try {
     accountIndexSchema.parse(accountIndex)
   } catch (error) {
-    if (error instanceof Error) {
-      throw new Error(`Invalid accountIndex: ${error.message}`)
-    }
-    throw new Error('accountIndex must be a non-negative integer')
+    const message = getZodErrorMessage(error)
+    throw new Error(`Invalid accountIndex: ${message}`)
   }
 }
 
@@ -105,10 +116,12 @@ export function validateNetworkName(network: string): void {
   try {
     networkNameSchema.parse(network)
   } catch (error) {
-    if (error instanceof Error) {
-      throw new Error(`Invalid network name: ${error.message}`)
+    const message = getZodErrorMessage(error)
+    // Provide a fallback message if Zod error doesn't have a clear message
+    if (message === 'Validation failed' || !message) {
+      throw new Error('network must be a non-empty string containing only alphanumeric characters, hyphens, and underscores')
     }
-    throw new Error('network must be a non-empty string containing only alphanumeric characters, hyphens, and underscores')
+    throw new Error(`Invalid network name: ${message}`)
   }
 }
 
@@ -122,10 +135,8 @@ export function validateTokenAddress(tokenAddress: string | null): void {
   try {
     ethereumAddressSchema.parse(tokenAddress)
   } catch (error) {
-    if (error instanceof Error) {
-      throw new Error(`Invalid tokenAddress: ${error.message}`)
-    }
-    throw new Error('tokenAddress must be a valid Ethereum address format (0x followed by 40 hex characters) or null')
+    const message = getZodErrorMessage(error)
+    throw new Error(`Invalid tokenAddress: ${message}`)
   }
 }
 
@@ -136,10 +147,8 @@ export function validateBalance(balance: string): void {
   try {
     balanceStringSchema.parse(balance)
   } catch (error) {
-    if (error instanceof Error) {
-      throw new Error(`Invalid balance: ${error.message}`)
-    }
-    throw new Error('balance must be a valid number string')
+    const message = getZodErrorMessage(error)
+    throw new Error(`Invalid balance: ${message}`)
   }
 }
 
