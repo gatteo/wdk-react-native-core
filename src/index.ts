@@ -37,7 +37,7 @@ export { useWdkApp } from './hooks/useWdkApp'
 
 export { useWalletManager } from './hooks/useWalletManager'
 export type { UseWalletManagerResult, WalletInfo } from './hooks/useWalletManager'
-export { useBalance, useBalancesForWallet, useRefreshBalance, balanceQueryKeys } from './hooks/useBalance'
+export { useBalance, useBalancesForWallet, useBalancesForWallets, useRefreshBalance, balanceQueryKeys } from './hooks/useBalance'
 export type { AccountInfo } from './store/walletStore'
 
 // Validation Utilities (for validating configs before use)

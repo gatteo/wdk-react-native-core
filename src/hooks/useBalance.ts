@@ -40,7 +40,7 @@
  * - **Updates happen automatically** in `fetchBalance()` - Zustand is updated after each successful fetch
  */
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { AccountService } from '../services/accountService'
 import { BalanceService } from '../services/balanceService'
@@ -428,6 +428,100 @@ export function useBalancesForWallet(
     gcTime: DEFAULT_QUERY_GC_TIME_MS,
     // Use Zustand as initial data source (single source of truth)
     initialData,
+  })
+}
+
+/**
+ * Hook to fetch balances for multiple wallets
+ * 
+ * This hook is designed to handle dynamic arrays of wallets without violating React's Rules of Hooks.
+ * It uses TanStack Query's useQueries which is specifically designed for this use case.
+ * 
+ * @param wallets - Array of wallets with accountIndex and identifier
+ * @param tokenConfigs - Token configurations
+ * @param options - Query options (enabled, refetchInterval, etc.)
+ * @returns Array of TanStack Query results, one for each wallet
+ * 
+ * @example
+ * ```tsx
+ * const wallets = [
+ *   { accountIndex: 0, identifier: 'user@example.com' },
+ *   { accountIndex: 1, identifier: 'channel-123' },
+ * ]
+ * const balanceQueries = useBalancesForWallets(wallets, tokenConfigs, { enabled: true })
+ * 
+ * const isLoading = balanceQueries.some(q => q.isLoading)
+ * const hasError = balanceQueries.some(q => q.isError)
+ * ```
+ */
+export function useBalancesForWallets(
+  wallets: Array<{ accountIndex: number; identifier: string }>,
+  tokenConfigs: TokenConfigProvider,
+  options?: BalanceQueryOptions
+) {
+  const workletStore = getWorkletStore()
+  const isInitialized = workletStore.getState().isInitialized
+
+  return useQueries({
+    queries: wallets.map((wallet) => {
+      const { accountIndex, identifier } = wallet
+      
+      // Create query keys for all tokens (with walletId)
+      const queryKeys = buildBalanceQueryKeys(identifier, accountIndex, tokenConfigs)
+      
+      // Get initial data from Zustand (single source of truth)
+      const initialData: BalanceFetchResult[] | undefined = (() => {
+        const tokenConfigsObj = typeof tokenConfigs === 'function' ? tokenConfigs() : tokenConfigs
+        const networks = Object.keys(tokenConfigsObj)
+        
+        const initialBalances: BalanceFetchResult[] = []
+        let hasAnyInitialData = false
+
+        for (const network of networks) {
+          const networkTokens = tokenConfigsObj[network]
+          if (!networkTokens) continue
+          
+          const tokens = [networkTokens.native, ...networkTokens.tokens]
+          for (const token of tokens) {
+            const balance = BalanceService.getBalance(accountIndex, network, token.address, identifier)
+            if (balance !== null) {
+              hasAnyInitialData = true
+              initialBalances.push({
+                success: true,
+                network,
+                accountIndex,
+                tokenAddress: token.address,
+                balance,
+              })
+            } else {
+              // Include placeholder for missing balances to maintain structure
+              initialBalances.push({
+                success: false,
+                network,
+                accountIndex,
+                tokenAddress: token.address,
+                balance: null,
+                error: 'Balance not available',
+              })
+            }
+          }
+        }
+
+        // Only return initial data if we have at least one persisted balance
+        return hasAnyInitialData ? initialBalances : undefined
+      })()
+
+      return {
+        queryKey: [...balanceQueryKeys.byWallet(identifier, accountIndex), 'all'],
+        queryFn: () => fetchBalancesForQueryKeys(queryKeys, identifier),
+        enabled: isQueryEnabled(options?.enabled, isInitialized, queryKeys.length > 0),
+        refetchInterval: options?.refetchInterval,
+        staleTime: options?.staleTime ?? DEFAULT_QUERY_STALE_TIME_MS,
+        gcTime: DEFAULT_QUERY_GC_TIME_MS,
+        // Use Zustand as initial data source (single source of truth)
+        initialData,
+      }
+    }),
   })
 }
 

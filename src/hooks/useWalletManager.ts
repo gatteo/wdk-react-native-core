@@ -93,6 +93,8 @@ export interface UseWalletManagerResult {
   error: string | null
   /** Clear error state */
   clearError: () => void
+  /** Clear active wallet ID (useful when switching users or logging out) */
+  clearActiveWallet: () => void
   // Wallet list operations (merged from useWalletList)
   /** List of all known wallets */
   wallets: WalletInfo[]
@@ -473,6 +475,15 @@ export function useWalletManager(
   }, [])
 
   /**
+   * Clear active wallet ID
+   * Useful when switching users or logging out to prevent auto-initialization with wrong wallet
+   */
+  const clearActiveWallet = useCallback(() => {
+    walletStore.setState({ activeWalletId: null })
+    log('[useWalletManager] Cleared active wallet ID')
+  }, [])
+
+  /**
    * Create a temporary wallet for previewing addresses
    * This creates a wallet in memory only (no biometrics, not saved to secure storage)
    * Useful for previewing addresses before committing to creating a real wallet
@@ -582,12 +593,13 @@ export function useWalletManager(
       // Create wallet using WalletSetupService
       await WalletSetupService.createNewWallet(effectiveNetworkConfigs, walletId)
 
-      // Add to wallet list
+      // Add to wallet list and set as active wallet
       walletStore.setState((state: import('../store/walletStore').WalletStore) => ({
-        walletList: [...state.walletList, { identifier: walletId, exists: true, isActive: false }],
+        walletList: [...state.walletList, { identifier: walletId, exists: true, isActive: true }],
+        activeWalletId: walletId, // Set as active wallet so WdkAppProvider can auto-initialize on restart
       }))
 
-      log(`Created new wallet: ${walletId}`)
+      log(`Created new wallet: ${walletId} and set as active`)
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err)
       logError('Failed to create wallet:', err)
@@ -610,6 +622,7 @@ export function useWalletManager(
       isInitializing, // Derived from walletLoadingState (single source of truth)
       error,
       clearError,
+      clearActiveWallet,
       // Wallet list operations
       wallets: walletListState.wallets,
       activeWalletId: walletListState.activeWalletId,
@@ -628,6 +641,7 @@ export function useWalletManager(
       isInitializing,
       error,
       clearError,
+      clearActiveWallet,
       walletListState.wallets,
       walletListState.activeWalletId,
       createWallet,
