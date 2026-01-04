@@ -226,12 +226,21 @@ export function WdkAppProvider({
         
         // Reset wallet state to trigger re-authentication on foreground
         // This ensures biometrics are required when app comes back
+        // CRITICAL: Only reset if wallet is 'ready' - don't interrupt 'loading' or 'checking' states
+        // Interrupting these states would cancel biometric authentication in progress
         const currentState = walletStore.getState()
-        if (currentState.walletLoadingState.type === 'ready' && currentState.activeWalletId) {
+        const currentStateType = currentState.walletLoadingState.type
+        
+        if (currentStateType === 'ready' && currentState.activeWalletId) {
           log('[WdkAppProvider] Resetting wallet state to trigger biometrics on foreground')
           walletStore.setState((prev) => updateWalletLoadingState(prev, { 
             type: 'not_loaded' 
           }))
+        } else if (currentStateType === 'loading' || currentStateType === 'checking') {
+          log('[WdkAppProvider] Preserving wallet loading state during background transition', {
+            currentState: currentStateType,
+          })
+          // Do not reset - allow biometric authentication to complete
         }
       }
       
@@ -440,26 +449,25 @@ export function WdkAppProvider({
       return
     }
     
-    // VALIDATION 2: If activeWalletId exists, it must match currentUserId
-    // If they don't match, clear the mismatched wallet instead of initializing
-    if (activeWalletId && activeWalletId !== currentUserId) {
-      log('[WdkAppProvider] Detected wallet mismatch - clearing stale wallet', {
+    // VALIDATION 2: If activeWalletId doesn't match currentUserId, set it to correct user
+    // This allows useOnboarding to initialize the correct wallet without interference
+    if (activeWalletId !== currentUserId) {
+      log('[WdkAppProvider] Setting activeWalletId to current user', {
         activeWalletId,
         currentUserId,
       })
       
-      // Clear mismatched wallet
+      // Set activeWalletId to current user - let useOnboarding handle initialization
       walletStore.setState({ 
-        activeWalletId: null,
-        // Also clear addresses to prevent using stale addresses
-        addresses: {},
+        activeWalletId: currentUserId,
       })
       
-      // Clear auth error flag
+      // Clear auth error flag to allow fresh authentication
       if (authErrorRef.current) {
         authErrorRef.current = null
       }
       
+      // Return and let the effect re-run with correct activeWalletId
       return
     }
     
