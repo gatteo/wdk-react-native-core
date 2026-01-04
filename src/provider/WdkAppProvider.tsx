@@ -48,7 +48,6 @@ import { log, logError } from '../utils/logger'
 import { validateNetworkConfigs, validateTokenConfigs } from '../utils/validation'
 import { DEFAULT_QUERY_STALE_TIME_MS, DEFAULT_QUERY_GC_TIME_MS } from '../utils/constants'
 import { InitializationStatus, AppStatus, isAppReadyStatus, isAppInProgressStatus, getCombinedStatus, getWorkletStatus } from '../utils/initializationState'
-import { useShallow } from 'zustand/react/shallow'
 import type { NetworkConfigs, TokenConfigs } from '../types'
 
 
@@ -161,6 +160,24 @@ const queryClient = new QueryClient({
   },
 })
 
+// Custom deep equality for walletLoadingState comparison
+// Defined outside component to prevent recreation on every render
+const deepEqualityFn = (a: any, b: any) => {
+  if (a === b) return true
+  if (!a || !b) return false
+  if (typeof a !== 'object' || typeof b !== 'object') return a === b
+  
+  const keysA = Object.keys(a)
+  const keysB = Object.keys(b)
+  if (keysA.length !== keysB.length) return false
+  
+  for (const key of keysA) {
+    if (!keysB.includes(key)) return false
+    if (a[key] !== b[key]) return false
+  }
+  return true
+}
+
 export function WdkAppProvider({
   networkConfigs,
   tokenConfigs,
@@ -220,22 +237,41 @@ export function WdkAppProvider({
   // Wallet state - read from walletStore (single source of truth)
   const walletStore = getWalletStore()
   
-  // Subscribe to wallet state using shallow comparison
-  const walletStateSlice = walletStore(
-    useShallow((state: WalletStore) => ({
-      activeWalletId: state.activeWalletId,
-      walletLoadingState: state.walletLoadingState,
-      addresses: state.activeWalletId ? state.addresses[state.activeWalletId] : undefined,
-    }))
-  )
+  // Subscribe to primitive values directly
+  const activeWalletId = walletStore((state: WalletStore) => state.activeWalletId)
   
-  const { activeWalletId, walletLoadingState, addresses: walletAddresses } = walletStateSlice
+  // For walletLoadingState, use a ref to manually check equality and prevent unnecessary re-renders
+  const walletLoadingStateRef = useRef(walletStore.getState().walletLoadingState)
+  const [walletLoadingState, setWalletLoadingState] = React.useState(walletStore.getState().walletLoadingState)
+  
+  useEffect(() => {
+    const unsubscribe = walletStore.subscribe((state: WalletStore) => {
+      const newState = state.walletLoadingState
+      // Only update if content actually changed (deep equality check)
+      if (!deepEqualityFn(walletLoadingStateRef.current, newState)) {
+        walletLoadingStateRef.current = newState
+        setWalletLoadingState(newState)
+      }
+    })
+    return unsubscribe
+  }, [walletStore])
+  
+  const walletAddresses = walletStore((state: WalletStore) => 
+    state.activeWalletId ? state.addresses[state.activeWalletId] : undefined
+  )
 
   // Hooks for wallet operations
   const {
     initializeWallet,
     error: walletManagerError,
   } = useWalletManager()
+  
+  // Store initializeWallet in a ref to avoid it being a dependency of the effect
+  // This breaks the infinite loop: effect runs → component re-renders → initializeWallet recreated → effect runs again
+  const initializeWalletRef = useRef(initializeWallet)
+  useEffect(() => {
+    initializeWalletRef.current = initializeWallet
+  }, [initializeWallet])
 
   // Derive isWalletInitializing from walletLoadingState (single source of truth)
   const isWalletInitializing = useMemo(() => {
@@ -327,8 +363,9 @@ export function WdkAppProvider({
     return () => {
       cancelled = true
     }
-  }, [isWorkletInitialized, isWorkletLoading, isWorkletStarted, networkConfigs])
-
+  }, [isWorkletInitialized, isWorkletLoading, isWorkletStarted])
+  // Note: networkConfigs removed from deps - it's a prop that should be stable for app lifetime
+  // and doesn't need to trigger worklet re-initialization
 
   // Consolidated effect: Sync wallet loading state with activeWalletId, addresses, and errors
   // 
@@ -387,7 +424,7 @@ export function WdkAppProvider({
         
         // Call initializeWallet to trigger biometrics and properly load the wallet
         // This will transition state to 'checking' immediately, preventing duplicate calls
-        initializeWallet({ createNew: false, walletId: activeWalletId })
+        initializeWalletRef.current({ createNew: false, walletId: activeWalletId })
           .then(() => {
             log('[WdkAppProvider] Wallet initialized successfully after switch')
           })
@@ -421,7 +458,7 @@ export function WdkAppProvider({
       // Call initializeWallet to trigger biometrics and properly load the wallet
       // This will transition state to 'checking' immediately, preventing duplicate calls
       // Then it will go through: checking -> loading -> ready
-      initializeWallet({ createNew: false, walletId: activeWalletId })
+      initializeWalletRef.current({ createNew: false, walletId: activeWalletId })
         .then(() => {
           log('[WdkAppProvider] Wallet initialized successfully from cache')
         })
@@ -456,7 +493,9 @@ export function WdkAppProvider({
         error 
       }))
     }
-  }, [enableAutoInitialization, activeWalletId, walletLoadingState, walletAddresses, walletManagerError, isWalletInitializing, walletStore, isWorkletStarted, isWorkletInitialized, initializeWallet])
+  }, [activeWalletId, walletLoadingState, walletAddresses, walletManagerError, isWalletInitializing, isWorkletStarted, isWorkletInitialized])
+  // Note: walletStore removed from deps - it's a singleton that never changes
+  // Note: initializeWallet removed from deps and accessed via ref to prevent infinite loop
 
   // Retry initialization
   const retry = useCallback(() => {
@@ -464,7 +503,8 @@ export function WdkAppProvider({
     if (isWalletErrorState(walletLoadingState)) {
       walletStore.setState((prev) => updateWalletLoadingState(prev, { type: 'not_loaded' }))
     }
-  }, [walletLoadingState, walletStore])
+  }, [walletLoadingState])
+  // Note: walletStore removed from deps - it's a singleton that never changes
 
   // Convenience getters
   const isInitializing = useMemo(() => isAppInProgressStatus(status), [status])

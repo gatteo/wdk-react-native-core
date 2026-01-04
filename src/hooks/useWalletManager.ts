@@ -136,7 +136,8 @@ export function useWalletManager(
     }
     
     return effectiveNetworkConfigs
-  }, [networkConfigs, workletStore])
+  }, [networkConfigs])
+  // Note: workletStore removed from deps - it's a singleton that never changes
 
   // Subscribe to wallet list state and loading state from Zustand
   const walletListState = walletStore(
