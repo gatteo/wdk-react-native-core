@@ -66,19 +66,6 @@ export interface UseWorkletResult {
   clearError: () => void
 }
 
-// Create stable references to bound methods to ensure 'this' context is preserved
-// and referential equality is maintained across renders
-const boundActions = {
-  startWorklet: WorkletLifecycleService.startWorklet.bind(WorkletLifecycleService),
-  initializeWDK: WorkletLifecycleService.initializeWDK.bind(WorkletLifecycleService),
-  generateEntropyAndEncrypt: WorkletLifecycleService.generateEntropyAndEncrypt.bind(WorkletLifecycleService),
-  getMnemonicFromEntropy: WorkletLifecycleService.getMnemonicFromEntropy.bind(WorkletLifecycleService),
-  getSeedAndEntropyFromMnemonic: WorkletLifecycleService.getSeedAndEntropyFromMnemonic.bind(WorkletLifecycleService),
-  initializeWorklet: WorkletLifecycleService.initializeWorklet.bind(WorkletLifecycleService),
-  reset: WorkletLifecycleService.reset.bind(WorkletLifecycleService),
-  clearError: WorkletLifecycleService.clearError.bind(WorkletLifecycleService),
-}
-
 export function useWorklet(): UseWorkletResult {
   const store = getWorkletStore()
 
