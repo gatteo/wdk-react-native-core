@@ -5,7 +5,6 @@
  * This service is focused solely on worklet lifecycle management.
  */
 
-import { HRPC } from '@tetherto/pear-wrk-wdk'
 import { Worklet } from 'react-native-bare-kit'
 
 import { getWalletStore } from '../store/walletStore'
@@ -16,7 +15,7 @@ import { handleServiceError } from '../utils/errorHandling'
 import { normalizeError } from '../utils/errorUtils'
 import { log, logWarn } from '../utils/logger'
 import { isInitialized as isWorkletInitialized } from '../utils/storeHelpers'
-import type { NetworkConfigs } from '../types'
+import type { NetworkConfigs, BundleConfig, HRPC } from '../types'
 import type { WorkletState } from '../store/workletStore'
 
 /**
@@ -104,9 +103,15 @@ export class WorkletLifecycleService {
     }
   }
   /**
-   * Start the worklet with network configurations
+   * Start the worklet with network configurations and bundle
+   *
+   * @param networkConfigs - Network configurations
+   * @param bundleConfig - Bundle configuration containing the worklet bundle and HRPC class
    */
-  static async startWorklet(networkConfigs: NetworkConfigs): Promise<void> {
+  static async startWorklet(
+    networkConfigs: NetworkConfigs,
+    bundleConfig: BundleConfig,
+  ): Promise<void> {
     const store = getWorkletStore()
     const state = store.getState()
 
@@ -131,12 +136,11 @@ export class WorkletLifecycleService {
 
       const worklet = new Worklet()
 
-      // Dynamic import of @tetherto/pear-wrk-wdk bundle
-      const pearWrkWdk = await import('@tetherto/pear-wrk-wdk')
-      const bundle = (pearWrkWdk as { bundle?: unknown }).bundle
+      // Get bundle and HRPC class from bundleConfig (passed from WdkAppProvider)
+      const { bundle, HRPC } = bundleConfig
 
       if (!bundle) {
-        throw new Error('Failed to load @tetherto/pear-wrk-wdk bundle')
+        throw new Error('Bundle not provided in bundleConfig')
       }
 
       // Bundle file (mobile bundle for React Native) - worklet.start expects bundle parameter
@@ -189,11 +193,12 @@ export class WorkletLifecycleService {
    * @param networkConfigs - Network configs (required if autoStart=true)
    * @param options - Options
    * @param options.autoStart - If true, start worklet if not started (default: false)
-   * @throws Error if worklet not started and autoStart=false or networkConfigs not provided
+   * @param options.bundleConfig - Bundle config (required if autoStart=true)
+   * @throws Error if worklet not started and autoStart=false or required configs not provided
    */
   static async ensureWorkletStarted(
     networkConfigs?: NetworkConfigs,
-    options?: { autoStart?: boolean },
+    options?: { autoStart?: boolean; bundleConfig?: BundleConfig },
   ): Promise<void> {
     const store = getWorkletStore()
     const state = store.getState()
@@ -203,11 +208,13 @@ export class WorkletLifecycleService {
     }
 
     const autoStart = options?.autoStart ?? false
-    if (!autoStart || !networkConfigs) {
-      throw new Error('Worklet must be started before this operation')
+    if (!autoStart || !networkConfigs || !options?.bundleConfig) {
+      throw new Error(
+        'Worklet must be started before this operation. Ensure WdkAppProvider is mounted.',
+      )
     }
 
-    await this.startWorklet(networkConfigs)
+    await this.startWorklet(networkConfigs, options.bundleConfig)
   }
 
   /**
@@ -412,14 +419,21 @@ export class WorkletLifecycleService {
 
   /**
    * Initialize both worklet and WDK in one call (convenience method) - ONLY encrypted
+   *
+   * @param options - Initialization options
+   * @param options.encryptionKey - Encryption key for the seed
+   * @param options.encryptedSeed - Encrypted seed buffer
+   * @param options.networkConfigs - Network configurations
+   * @param options.bundleConfig - Bundle configuration
    */
   static async initializeWorklet(options: {
     encryptionKey: string
     encryptedSeed: string
     networkConfigs: NetworkConfigs
+    bundleConfig: BundleConfig
   }): Promise<void> {
     // Convenience method that does both steps - ONLY encrypted approach
-    await this.startWorklet(options.networkConfigs)
+    await this.startWorklet(options.networkConfigs, options.bundleConfig)
     await this.initializeWDK({
       encryptionKey: options.encryptionKey,
       encryptedSeed: options.encryptedSeed,

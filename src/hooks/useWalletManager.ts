@@ -661,7 +661,7 @@ export function useWalletManager(
         throw err
       }
     })
-  }, [getNetworkConfigs])
+  }, [])
 
   /**
    * Check if a wallet exists (for wallet list operations)

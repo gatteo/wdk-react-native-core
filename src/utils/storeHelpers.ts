@@ -5,11 +5,10 @@
  * to reduce code duplication across services.
  */
 
-import type { HRPC } from '@tetherto/pear-wrk-wdk'
-
 import { getWorkletStore } from '../store/workletStore'
 import { getWalletStore } from '../store/walletStore'
 import { asExtendedHRPC } from '../types/hrpc'
+import type { HRPC } from '../types'
 import type { WalletState } from '../store/walletStore'
 import { produce } from 'immer'
 

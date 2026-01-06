@@ -1,6 +1,6 @@
 /**
  * @tetherto/wdk-react-native-core
- * 
+ *
  * Core functionality for React Native wallets
  * Provides wallet management, balance fetching, and worklet operations
  */
@@ -20,7 +20,20 @@ export type {
   TokenConfigProvider,
   TokenHelpers,
   WalletStore,
+  // Bundle and HRPC types
+  BundleConfig,
+  HRPC,
+  HRPCConstructor,
+  LogRequest,
+  WorkletStartRequest,
+  WorkletStartResponse,
+  DisposeRequest,
+  CallMethodRequest,
+  CallMethodResponse,
 } from './types'
+
+// RPC enums
+export { LogType } from './types'
 
 // HRPC Type Extensions (for extending HRPC functionality)
 export type { ExtendedHRPC } from './types/hrpc'
@@ -37,15 +50,21 @@ export { useWdkApp } from './hooks/useWdkApp'
 
 export { useWalletManager } from './hooks/useWalletManager'
 export type { UseWalletManagerResult, WalletInfo } from './hooks/useWalletManager'
-export { useBalance, useBalancesForWallet, useBalancesForWallets, useRefreshBalance, balanceQueryKeys } from './hooks/useBalance'
+export {
+  useBalance,
+  useBalancesForWallet,
+  useBalancesForWallets,
+  useRefreshBalance,
+  balanceQueryKeys,
+} from './hooks/useBalance'
 export type { AccountInfo } from './store/walletStore'
 export { getWalletStore } from './store/walletStore'
 export type { WalletStore as WalletStoreState } from './store/walletStore'
 
 // Validation Utilities (for validating configs before use)
-export { 
-  validateNetworkConfigs, 
-  validateTokenConfigs, 
+export {
+  validateNetworkConfigs,
+  validateTokenConfigs,
   validateBalanceRefreshInterval,
   validateAccountIndex,
   validateTokenAddress,
@@ -68,8 +87,8 @@ export {
 } from './utils/schemas'
 
 // Type Guards (for runtime type checking)
-export { 
-  isNetworkConfigs, 
+export {
+  isNetworkConfigs,
   isTokenConfigs,
   isEthereumAddress,
   isValidAccountIndex,
@@ -94,11 +113,11 @@ export type { Result } from './utils/result'
 export { ok, err, toResult, toResultSync } from './utils/result'
 
 // Initialization State Machine
-export { 
-  InitializationStatus, 
+export {
+  InitializationStatus,
   AppStatus,
-  isErrorStatus, 
-  isReadyStatus, 
+  isErrorStatus,
+  isReadyStatus,
   isInProgressStatus,
   isAppReadyStatus,
   isAppInProgressStatus,
@@ -109,6 +128,5 @@ export {
   getStatusMessage,
   getAppStatusMessage,
   getWorkletStatus,
-  getCombinedStatus
+  getCombinedStatus,
 } from './utils/initializationState'
-
