@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "Node16",
+    "module": "esnext",
     "lib": ["ES2020"],
     "declaration": true,
     "outDir": "./dist",
@@ -12,12 +12,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "moduleResolution": "node16",
+    "moduleResolution": "bundler",
     "jsx": "react",
     "baseUrl": ".",
-    "paths": {
-      "@tetherto/wdk-react-native-secure-storage": ["../wdk-react-native-secure-storage/src"]
-    },
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "sourceMap": true
@@ -25,4 +22,3 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 }
-
