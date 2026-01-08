@@ -34,8 +34,7 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "prepack": "npm run build",
-    "postinstall": "npm run build",
-    "build-pack": "npm i && npm pack"
+    "postinstall": "npm run build"
   },
   "keywords": [
     "wallet",
@@ -51,7 +50,7 @@
     "@tetherto/wdk-react-native-secure-storage": "github:tetherto/wdk-react-native-secure-storage",
     "@tanstack/react-query": "^5.0.0",
     "expo-crypto": "^15.0.8",
-    "@tetherto/pear-wrk-wdk": "github:nampc1/pear-wrk-wdk-v2-fork#nampc/v2",
+    "@tetherto/pear-wrk-wdk": "github:tetherto/pear-wrk-wdk#v2",
     "react-native-bare-kit": "^0.11.0",
     "react-native-mmkv": "^4.1.0",
     "zod": "^3.22.0",
