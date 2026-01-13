@@ -190,9 +190,12 @@ function evictLRUCredentials(): void {
 
   // Remove the least recently used credential
   if (oldestIdentifier !== null) {
-    const { [oldestIdentifier]: _, ...rest } = state.credentialsCache
     credentialsAccessOrder.delete(oldestIdentifier)
-    store.setState({ credentialsCache: rest })
+    store.setState(
+      produce(state, (draft) => {
+        delete draft.credentialsCache[oldestIdentifier]
+      }),
+    )
     log(
       `[WorkletStore] Evicted LRU credentials cache entry: ${oldestIdentifier} (cache size: ${cacheSize}/${MAX_CREDENTIALS_CACHE_SIZE})`,
     )
@@ -231,9 +234,12 @@ export function getCachedCredentials(
   // Check expiration
   if (Date.now() > cached.expiresAt) {
     // Remove expired entry
-    const { [identifier]: _, ...rest } = state.credentialsCache
     credentialsAccessOrder.delete(identifier)
-    store.setState({ credentialsCache: rest })
+    store.setState(
+      produce(state, (draft) => {
+        delete draft.credentialsCache[identifier]
+      }),
+    )
     return null
   }
 
@@ -296,9 +302,12 @@ export function clearCredentialsCache(identifier?: string): void {
 
   if (identifier) {
     // Clear specific wallet
-    const { [identifier]: _, ...rest } = state.credentialsCache
     credentialsAccessOrder.delete(identifier)
-    store.setState({ credentialsCache: rest })
+    store.setState(
+      produce(state, (draft) => {
+        delete draft.credentialsCache[identifier]
+      }),
+    )
   } else {
     // Clear all
     credentialsAccessOrder.clear()

@@ -276,15 +276,16 @@ export function useWalletManager(
                 currentState.type === 'loading' ||
                 currentState.type === 'checking'
               ) {
-                const readyStateUpdate = updateWalletLoadingState(prev, {
-                  type: 'ready',
-                  identifier: targetWalletId,
-                })
                 // Also set activeWalletId to prevent WdkAppProvider from resetting state
-                return {
-                  ...readyStateUpdate,
-                  activeWalletId: targetWalletId,
-                }
+                return produce(
+                  updateWalletLoadingState(prev, {
+                    type: 'ready',
+                    identifier: targetWalletId,
+                  }),
+                  (state) => {
+                    state.activeWalletId = targetWalletId
+                  },
+                )
               }
               // If state is 'not_loaded', let WdkAppProvider handle it (it will transition when addresses exist)
               // If state is already 'ready', don't change it
@@ -298,15 +299,16 @@ export function useWalletManager(
               currentState.type === 'loading' ||
               currentState.type === 'checking'
             ) {
-              const readyStateUpdate = updateWalletLoadingState(prev, {
-                type: 'ready',
-                identifier: targetWalletId,
-              })
               // Also set activeWalletId to prevent WdkAppProvider from resetting state
-              return {
-                ...readyStateUpdate,
-                activeWalletId: targetWalletId,
-              }
+              return produce(
+                updateWalletLoadingState(prev, {
+                  type: 'ready',
+                  identifier: targetWalletId,
+                }),
+                (state) => {
+                  state.activeWalletId = targetWalletId
+                },
+              )
             } else if (currentState.type === 'not_loaded') {
               // State was reset to not_loaded by WdkAppProvider
               // We need to transition through 'loading' first, then 'ready'
@@ -327,17 +329,16 @@ export function useWalletManager(
               })
               // Second transition: loading -> ready (using the updated state)
               const readyStateUpdate = updateWalletLoadingState(
-                { ...prev, ...loadingStateUpdate } as typeof prev,
+                loadingStateUpdate,
                 {
                   type: 'ready',
                   identifier: targetWalletId,
                 },
               )
               // Also set activeWalletId to prevent WdkAppProvider from resetting state
-              return {
-                ...readyStateUpdate,
-                activeWalletId: targetWalletId,
-              }
+              return produce(readyStateUpdate, (state) => {
+                state.activeWalletId = targetWalletId
+              })
             } else {
               // State is 'ready' or 'error' - don't change it
               log(
@@ -749,13 +750,17 @@ export function useWalletManager(
         )
 
         // Add to wallet list and set as active wallet
-        walletStore.setState((state) => ({
-          walletList: [
-            ...state.walletList,
-            { identifier: walletId, exists: true, isActive: true },
-          ],
-          activeWalletId: walletId, // Set as active wallet so WdkAppProvider can auto-initialize on restart
-        }))
+        walletStore.setState((prev) =>
+          produce(prev, (state) => {
+            state.walletList.push({
+              identifier: walletId,
+              exists: true,
+              isActive: true,
+            })
+            // Set as active wallet so WdkAppProvider can auto-initialize on restart
+            state.activeWalletId = walletId
+          }),
+        )
 
         log(`Created new wallet: ${walletId} and set as active`)
       } catch (err) {
