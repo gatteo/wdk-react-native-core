@@ -130,7 +130,7 @@ export async function withOperationMutex<T>(
   }
 
   // Set up timeout protection
-  let timeoutId: NodeJS.Timeout | null = null
+  let timeoutId: ReturnType<typeof setTimeout> | null = null
   let timeoutExceeded = false
 
   const timeoutPromise = new Promise<never>((_, reject) => {
