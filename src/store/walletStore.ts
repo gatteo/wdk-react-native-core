@@ -1,10 +1,10 @@
 /**
  * Wallet Store - Source of Truth for Wallet Data
- * 
+ *
  * IMPORTANT: This is the ONLY place where addresses and balances are actually stored.
- * 
+ *
  * ## Store Boundaries
- * 
+ *
  * **walletStore** (this file):
  * - Wallet addresses: { [walletId]: { [network]: { [accountIndex]: address } } }
  * - Wallet balances: { [walletId]: { [network]: { [accountIndex]: { [tokenAddress]: balance } } } }
@@ -14,27 +14,27 @@
  * - Account list: { [walletId]: Array of account info }
  * - Wallet list: Array of wallet info (multiple wallets)
  * - Active wallet ID: Currently active wallet identifier
- * 
+ *
  * Note: Loading states for wallet list operations are managed locally in hooks
  * (useWalletManager) since they're ephemeral and only used within those hooks.
- * 
+ *
  * **workletStore** (workletStore.ts):
  * - Worklet lifecycle state (isWorkletStarted, isInitialized, etc.)
  * - Worklet runtime instances (worklet, hrpc, ipc)
  * - Worklet configuration
- * 
+ *
  * ## Separation of Concerns
- * 
+ *
  * - **walletStore**: Manages wallet data (addresses, balances) - derived/computed from worklet
  * - **workletStore**: Manages worklet runtime and lifecycle
- * 
+ *
  * These stores are intentionally separate to:
  * 1. Prevent cross-contamination of lifecycle and data concerns
  * 2. Allow independent persistence strategies
  * 3. Enable clear boundaries for testing and debugging
- * 
+ *
  * ## Important Notes
- * 
+ *
  * - Addresses: Stored in Zustand (derived/computed state, deterministic, no refetching needed)
  * - Balances: Stored in Zustand (single source of truth), use TanStack Query via useBalance() hook for fetching
  *   - Zustand is the single source of truth for balances
@@ -48,6 +48,7 @@
 // External packages
 import { create } from 'zustand'
 import { persist, createJSONStorage, devtools } from 'zustand/middleware'
+import { produce } from 'immer'
 
 // Local imports
 import type {
@@ -91,15 +92,15 @@ export type WalletLoadingState =
 
 export interface WalletState {
   // SOURCE OF TRUTH - addresses stored ONLY here (per-wallet)
-  addresses: WalletAddressesByWallet  // walletId -> addresses
-  walletLoading: Record<string, WalletLoadingStates>  // walletId -> loading states
+  addresses: WalletAddressesByWallet // walletId -> addresses
+  walletLoading: Record<string, WalletLoadingStates> // walletId -> loading states
   // SOURCE OF TRUTH - balances stored ONLY here (per-wallet)
-  balances: WalletBalancesByWallet  // walletId -> balances
+  balances: WalletBalancesByWallet // walletId -> balances
   // Maps walletId -> "network-accountIndex-tokenAddress" -> boolean
-  balanceLoading: Record<string, BalanceLoadingStates>  // walletId -> loading states
-  lastBalanceUpdate: Record<string, Record<string, Record<number, number>>>  // walletId -> network -> accountIndex -> timestamp
+  balanceLoading: Record<string, BalanceLoadingStates> // walletId -> loading states
+  lastBalanceUpdate: Record<string, Record<string, Record<number, number>>> // walletId -> network -> accountIndex -> timestamp
   // Account list management (per-wallet)
-  accountList: Record<string, AccountInfo[]>  // walletId -> account list
+  accountList: Record<string, AccountInfo[]> // walletId -> account list
   // Wallet list management
   walletList: WalletInfo[]
   activeWalletId: string | null
@@ -107,7 +108,7 @@ export interface WalletState {
   walletLoadingState: WalletLoadingState
   // Operation mutex - prevents concurrent wallet operations
   isOperationInProgress: boolean
-  currentOperation: string | null  // Description of current operation
+  currentOperation: string | null // Description of current operation
 }
 
 export type WalletStore = WalletState
@@ -115,12 +116,12 @@ export type WalletStore = WalletState
 type WalletStoreInstance = ReturnType<ReturnType<typeof create<WalletStore>>>
 
 const initialState: WalletState = {
-  addresses: {},  // walletId -> addresses
-  walletLoading: {},  // walletId -> loading states
-  balances: {},  // walletId -> balances
-  balanceLoading: {},  // walletId -> loading states
-  lastBalanceUpdate: {},  // walletId -> network -> accountIndex -> timestamp
-  accountList: {},  // walletId -> account list
+  addresses: {}, // walletId -> addresses
+  walletLoading: {}, // walletId -> loading states
+  balances: {}, // walletId -> balances
+  balanceLoading: {}, // walletId -> loading states
+  lastBalanceUpdate: {}, // walletId -> network -> accountIndex -> timestamp
+  accountList: {}, // walletId -> account list
   walletList: [],
   activeWalletId: null,
   walletLoadingState: { type: 'not_loaded' },
@@ -141,10 +142,10 @@ export function createWalletStore(): WalletStoreInstance {
     return walletStoreInstance
   }
 
-  const store = create<WalletStore>()(
+  walletStoreInstance = create<WalletStore>()(
     devtools(
       persist(
-        (set, get) => ({
+        (_set, _get) => ({
           ...initialState,
         }),
         {
@@ -173,14 +174,13 @@ export function createWalletStore(): WalletStoreInstance {
               }
             }
           },
-        }
+        },
       ),
-      { name: 'WalletStore' }
-    )
+      { name: 'WalletStore' },
+    ),
   )
 
-  walletStoreInstance = store
-  return store
+  return walletStoreInstance
 }
 
 export function getWalletStore() {
@@ -198,19 +198,19 @@ export function getWalletStore() {
  */
 function isValidStateTransition(
   current: WalletLoadingState,
-  next: WalletLoadingState['type']
+  next: WalletLoadingState['type'],
 ): boolean {
   // Allow reset from any state
   if (next === 'not_loaded') return true
-  
+
   // Allow error from any state
   if (next === 'error') return true
-  
+
   // After early returns, TypeScript narrows the type, but we need to check all transitions
   // Use type assertion to tell TypeScript that 'not_loaded' and 'error' are still possible
   // (even though they're handled by early returns, they're valid from all states)
   const nextType = next as WalletLoadingState['type']
-  
+
   switch (current.type) {
     case 'not_loaded':
       return nextType === 'checking' || nextType === 'loading'
@@ -219,9 +219,17 @@ function isValidStateTransition(
     case 'loading':
       return nextType === 'ready' || nextType === 'error'
     case 'ready':
-      return nextType === 'not_loaded' || nextType === 'loading' || nextType === 'checking'
+      return (
+        nextType === 'not_loaded' ||
+        nextType === 'loading' ||
+        nextType === 'checking'
+      )
     case 'error':
-      return nextType === 'not_loaded' || nextType === 'checking' || nextType === 'loading'
+      return (
+        nextType === 'not_loaded' ||
+        nextType === 'checking' ||
+        nextType === 'loading'
+      )
     default:
       return false
   }
@@ -234,19 +242,22 @@ function isValidStateTransition(
  */
 export function updateWalletLoadingState(
   state: WalletState,
-  newState: WalletLoadingState
-): Partial<WalletState> {
+  newState: WalletLoadingState,
+) {
   // Log state transition for debugging
   if (state.walletLoadingState.type !== newState.type) {
-    log(`[WalletState] Transition: ${state.walletLoadingState.type} -> ${newState.type}`, {
-      from: state.walletLoadingState,
-      to: newState,
-    })
+    log(
+      `[WalletState] Transition: ${state.walletLoadingState.type} -> ${newState.type}`,
+      {
+        from: state.walletLoadingState,
+        to: newState,
+      },
+    )
   }
-  
+
   if (!isValidStateTransition(state.walletLoadingState, newState.type)) {
     const error = new Error(
-      `Invalid state transition from ${state.walletLoadingState.type} to ${newState.type}`
+      `Invalid state transition from ${state.walletLoadingState.type} to ${newState.type}`,
     )
     logError(`⚠️ Invalid state transition: ${error.message}`, {
       currentState: state.walletLoadingState,
@@ -258,14 +269,18 @@ export function updateWalletLoadingState(
       throw error
     }
   }
-  
-  return { walletLoadingState: newState }
+
+  return produce(state, (draft) => {
+    draft.walletLoadingState = newState
+  })
 }
 
 /**
  * Get wallet identifier from loading state
  */
-export function getWalletIdFromLoadingState(state: WalletLoadingState): string | null {
+export function getWalletIdFromLoadingState(
+  state: WalletLoadingState,
+): string | null {
   switch (state.type) {
     case 'checking':
     case 'loading':
@@ -298,4 +313,3 @@ export function isWalletReadyState(state: WalletLoadingState): boolean {
 export function isWalletErrorState(state: WalletLoadingState): boolean {
   return state.type === 'error'
 }
-

@@ -1,10 +1,10 @@
 /**
  * Worklet Store - Source of Truth for Worklet Lifecycle
- * 
+ *
  * This store manages worklet lifecycle state (initialization, configuration, runtime instances).
- * 
+ *
  * ## Store Boundaries
- * 
+ *
  * **workletStore** (this file):
  * - Worklet lifecycle state (isWorkletStarted, isInitialized, isLoading)
  * - Worklet runtime instances (worklet, hrpc, ipc)
@@ -12,25 +12,25 @@
  * - Worklet initialization results (workletStartResult, wdkInitResult)
  * - Encrypted credentials in memory (encryptedSeed, encryptionKey) - for active wallet
  * - Multi-wallet credential cache (credentialsCache) - for multiple wallets
- * 
+ *
  * **walletStore** (walletStore.ts):
  * - Wallet data (addresses, balances)
  * - Wallet loading states
  * - Balance loading states
  * - Last balance update timestamps
- * 
+ *
  * ## Separation of Concerns
- * 
+ *
  * - **workletStore**: Manages the worklet runtime and its lifecycle
  * - **walletStore**: Manages wallet data derived from the worklet
- * 
+ *
  * These stores are intentionally separate to:
  * 1. Prevent cross-contamination of lifecycle and data concerns
  * 2. Allow independent persistence strategies
  * 3. Enable clear boundaries for testing and debugging
- * 
+ *
  * ## Important Notes
- * 
+ *
  * - NEVER store wallet data (addresses, balances) in workletStore
  * - NEVER store worklet lifecycle state in walletStore
  * - All worklet state is runtime-only - state resets completely on app restart
@@ -47,22 +47,21 @@ import { HRPC } from '@tetherto/pear-wrk-wdk'
 import type { WorkletStartResponse } from '@tetherto/pear-wrk-wdk/types/rpc'
 
 // Local imports
-import type {
-  NetworkConfigs,
-} from '../types'
+import type { NetworkConfigs } from '../types'
 import { log } from '../utils/logger'
+import { produce } from 'immer'
 
 /**
  * Maximum number of credentials to cache before evicting least recently used
  * This prevents unbounded memory growth while maintaining performance
  * Recommended: 10-20 wallets for typical use cases
- * 
+ *
  * Cache Management:
  * - Size Limit: When cache exceeds MAX_CREDENTIALS_CACHE_SIZE, LRU entries are evicted
  * - TTL (Time To Live): Each credential has an expiration timestamp (default: 5 minutes)
  * - Automatic Expiration: Expired credentials are removed on access
  * - LRU Eviction: Least recently used credentials are evicted when size limit is reached
- * 
+ *
  * These safeguards ensure:
  * 1. Memory usage remains bounded
  * 2. Credentials don't persist indefinitely in memory
@@ -78,7 +77,7 @@ export interface CachedCredentials {
   encryptionKey?: string
   encryptedSeed?: string
   encryptedEntropy?: string
-  expiresAt: number  // TTL timestamp
+  expiresAt: number // TTL timestamp
 }
 
 /**
@@ -139,7 +138,7 @@ let workletStoreInstance: WorkletStoreInstance | null = null
 
 /**
  * Creates singleton worklet store instance.
- * 
+ *
  * This store is runtime-only - all state resets on app restart.
  * All operations are handled by WorkletLifecycleService, not the store itself.
  */
@@ -153,8 +152,8 @@ export function createWorkletStore(): WorkletStoreInstance {
       () => ({
         ...initialState,
       }),
-      { name: 'WorkletStore' }
-    )
+      { name: 'WorkletStore' },
+    ),
   )
 
   workletStoreInstance = store
@@ -173,7 +172,7 @@ function evictLRUCredentials(): void {
   const store = getWorkletStore()
   const state = store.getState()
   const cacheSize = Object.keys(state.credentialsCache).length
-  
+
   if (cacheSize < MAX_CREDENTIALS_CACHE_SIZE) {
     return
   }
@@ -191,10 +190,15 @@ function evictLRUCredentials(): void {
 
   // Remove the least recently used credential
   if (oldestIdentifier !== null) {
-    const { [oldestIdentifier]: _, ...rest } = state.credentialsCache
     credentialsAccessOrder.delete(oldestIdentifier)
-    store.setState({ credentialsCache: rest })
-    log(`[WorkletStore] Evicted LRU credentials cache entry: ${oldestIdentifier} (cache size: ${cacheSize}/${MAX_CREDENTIALS_CACHE_SIZE})`)
+    store.setState(
+      produce(state, (draft) => {
+        delete draft.credentialsCache[oldestIdentifier]
+      }),
+    )
+    log(
+      `[WorkletStore] Evicted LRU credentials cache entry: ${oldestIdentifier} (cache size: ${cacheSize}/${MAX_CREDENTIALS_CACHE_SIZE})`,
+    )
   }
 }
 
@@ -205,7 +209,11 @@ function evictLRUCredentials(): void {
 function logCacheSizeIfNeeded(cacheSize: number): void {
   const warningThreshold = Math.ceil(MAX_CREDENTIALS_CACHE_SIZE * 0.5)
   if (cacheSize >= warningThreshold) {
-    log(`[WorkletStore] Credentials cache size: ${cacheSize}/${MAX_CREDENTIALS_CACHE_SIZE} (${Math.round(cacheSize / MAX_CREDENTIALS_CACHE_SIZE * 100)}% full)`)
+    log(
+      `[WorkletStore] Credentials cache size: ${cacheSize}/${MAX_CREDENTIALS_CACHE_SIZE} (${Math.round(
+        (cacheSize / MAX_CREDENTIALS_CACHE_SIZE) * 100,
+      )}% full)`,
+    )
   }
 }
 
@@ -214,28 +222,31 @@ function logCacheSizeIfNeeded(cacheSize: number): void {
  * Returns null if not cached or expired
  * Updates access time for LRU tracking
  */
-export function getCachedCredentials(identifier: string): CachedCredentials | null {
+export function getCachedCredentials(
+  identifier: string,
+): CachedCredentials | null {
   const store = getWorkletStore()
   const state = store.getState()
   const cached = state.credentialsCache[identifier]
-  
+
   if (!cached) return null
-  
+
   // Check expiration
   if (Date.now() > cached.expiresAt) {
     // Remove expired entry
-    const { [identifier]: _, ...rest } = state.credentialsCache
     credentialsAccessOrder.delete(identifier)
-    store.setState({
-      credentialsCache: rest,
-    })
+    store.setState(
+      produce(state, (draft) => {
+        delete draft.credentialsCache[identifier]
+      }),
+    )
     return null
   }
-  
+
   // Update access time for LRU tracking
   credentialsAccessCounter++
   credentialsAccessOrder.set(identifier, credentialsAccessCounter)
-  
+
   return cached
 }
 
@@ -246,33 +257,35 @@ export function getCachedCredentials(identifier: string): CachedCredentials | nu
  */
 export function setCachedCredentials(
   identifier: string,
-  credentials: Partial<CachedCredentials>
+  credentials: Partial<CachedCredentials>,
 ): void {
   const store = getWorkletStore()
   const state = store.getState()
-  const existing = state.credentialsCache[identifier] || {}
-  
+
   // Evict LRU credentials if needed before adding new entry
   // Check if we're adding a new entry (not just updating existing)
   const isNewEntry = !state.credentialsCache[identifier]
   if (isNewEntry) {
     evictLRUCredentials()
   }
-  
+
   // Update access time for LRU tracking
   credentialsAccessCounter++
   credentialsAccessOrder.set(identifier, credentialsAccessCounter)
-  
-  store.setState({
-    credentialsCache: {
-      ...state.credentialsCache,
-      [identifier]: {
-        ...existing,
-        ...credentials,
+
+  store.setState((prev) =>
+    produce(prev, (state) => {
+      const credentialTemplate = {
         expiresAt: Date.now() + state.credentialsCacheTTL,
       }
-    }
-  })
+      state.credentialsCache[identifier] ??= credentialTemplate
+      Object.assign(
+        state.credentialsCache[identifier],
+        credentialTemplate,
+        credentials,
+      )
+    }),
+  )
 
   // Log cache size for monitoring (after state update)
   const newCacheSize = Object.keys(store.getState().credentialsCache).length
@@ -286,12 +299,15 @@ export function setCachedCredentials(
 export function clearCredentialsCache(identifier?: string): void {
   const store = getWorkletStore()
   const state = store.getState()
-  
+
   if (identifier) {
     // Clear specific wallet
-    const { [identifier]: _, ...rest } = state.credentialsCache
     credentialsAccessOrder.delete(identifier)
-    store.setState({ credentialsCache: rest })
+    store.setState(
+      produce(state, (draft) => {
+        delete draft.credentialsCache[identifier]
+      }),
+    )
   } else {
     // Clear all
     credentialsAccessOrder.clear()
@@ -304,7 +320,7 @@ export function clearCredentialsCache(identifier?: string): void {
  * Clear all sensitive data from memory (active wallet credentials + cache)
  * This should be called when sensitive data is no longer needed
  * to minimize exposure in memory dumps or debugging
- * 
+ *
  * Note: In JavaScript, we cannot overwrite memory. Setting to null and clearing
  * references allows garbage collection, but the old values may remain in memory
  * until GC runs. This is a JavaScript limitation.
