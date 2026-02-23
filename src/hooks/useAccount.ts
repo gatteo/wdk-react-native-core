@@ -53,6 +53,11 @@ export interface UseAccountReturn<T extends object> {
    * Verifies a signature.
    */
   verify: (message: string, signature: string) => Promise<boolean>
+  
+  /**
+   * Query fee for a transaction.
+   */
+  estimateFee: (params?: Partial<TransactionParams>) => Promise<Omit<TransactionResult, 'hash'>>
 
   /**
    * Accesses chain-specific or other modular features not included in the core API.
@@ -218,6 +223,15 @@ export function useAccount<T extends object = {}>(
       return isValid
     },
     [accountParams.network, accountParams.accountIndex],
+  )
+  
+  const estimateFee = useCallback(
+    async({}: Partial<TransactionParams>): Promise<Omit<TransactionResult, 'hash'> => {
+      // call AccountService.callAccountMethod to invoke quoteTransaction method of WDK
+      // please define interface for quoteTransaction in DefaultAccountMethods
+      // refer to my implementation of verify, sign,...
+    },
+    []
   )
 
   const extension = useCallback((): T => {
