@@ -226,10 +226,12 @@ export function useAccount<T extends object = {}>(
   )
   
   const estimateFee = useCallback(
-    async({}: Partial<TransactionParams>): Promise<Omit<TransactionResult, 'hash'> => {
+    async (params?: Partial<TransactionParams>): Promise<Omit<TransactionResult, 'hash'>> => {
       // call AccountService.callAccountMethod to invoke quoteTransaction method of WDK
       // please define interface for quoteTransaction in DefaultAccountMethods
       // refer to my implementation of verify, sign,...
+      // 
+      return { fee: '100' }
     },
     []
   )
@@ -261,6 +263,7 @@ export function useAccount<T extends object = {}>(
       send,
       sign,
       verify,
+      estimateFee,
       extension,
     } : null),
     [
@@ -270,6 +273,7 @@ export function useAccount<T extends object = {}>(
       send,
       sign,
       verify,
+      estimateFee,
       extension,
     ],
   )
