@@ -75,34 +75,36 @@ export function useAccount<T extends object = {}>(
 ): UseAccountReturn<T> | null {
   const walletStore = getWalletStore()
 
-  const activeWalletId = walletStore((state) => state.activeWalletId)
-  
-  if (!activeWalletId) {
-    return null
-  }
-
-  const { address } = walletStore(
+  const { activeWalletId, address } = walletStore(
     useShallow((state) => {
-      const address = state.addresses[activeWalletId]?.[accountParams.network]?.[accountParams.accountIndex]
+      const walletId = state.activeWalletId
+      const address = walletId
+        ? state.addresses[walletId]?.[accountParams.network]?.[accountParams.accountIndex]
+        : undefined
 
       return {
+        activeWalletId: walletId,
         address,
       }
     }),
   )
 
   const account = useMemo(
-    () => ({
-      accountIndex: accountParams.accountIndex,
-      network: accountParams.network,
-      walletId: activeWalletId,
-    }),
+    () => {
+      if (!activeWalletId) {
+        return null
+      }
+      return {
+        accountIndex: accountParams.accountIndex,
+        network: accountParams.network,
+        walletId: activeWalletId,
+      }
+    },
     [accountParams.accountIndex, accountParams.network, activeWalletId],
   )
 
   const getBalance = useCallback(
     async (tokens: IAsset[]): Promise<BalanceFetchResult[]> => {
-
       if (!tokens || tokens.length === 0) {
         return []
       }
@@ -256,16 +258,20 @@ export function useAccount<T extends object = {}>(
   )
 
   return useMemo(
-    () => (address ? {
-      address,
-      account,
-      getBalance,
-      send,
-      sign,
-      verify,
-      estimateFee,
-      extension,
-    } : null),
+    () => {
+      if (!address || !account) return null
+
+      return {
+        address,
+        account,
+        getBalance,
+        send,
+        sign,
+        verify,
+        estimateFee,
+        extension,
+      }
+    },
     [
       address,
       account,

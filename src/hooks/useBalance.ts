@@ -285,28 +285,33 @@ export function useBalance(
 
   const isInitialized = workletStore.getState().isInitialized
   const walletId = walletStore.getState().activeWalletId
-  
-  if (!walletId) {
-    throw new Error('WalletId cannot be null')
-  }
-
   const assetId = asset.getId()
 
-  const initialBalance = BalanceService.getBalance(accountIndex, network, assetId, walletId)
-  const initialData: BalanceFetchResult | undefined = initialBalance !== null
-    ? {
-        success: true,
-        network,
-        accountIndex,
-        assetId,
-        balance: initialBalance,
-      }
-    : undefined
+  const initialData: BalanceFetchResult | undefined = (() => {
+    if (!walletId) {
+      return undefined
+    }
+
+    const initialBalance = BalanceService.getBalance(accountIndex, network, assetId, walletId)
+    return initialBalance !== null
+      ? {
+          success: true,
+          network,
+          accountIndex,
+          assetId,
+          balance: initialBalance,
+        }
+      : undefined
+  })()
 
   return useQuery({
-    queryKey: balanceQueryKeys.byToken(walletId, accountIndex, network, assetId),
-    queryFn: () => fetchBalance(network, accountIndex, asset, walletId),
-    enabled: isQueryEnabled(options?.enabled, isInitialized),
+    queryKey: balanceQueryKeys.byToken(walletId ?? '', accountIndex, network, assetId),
+    queryFn: () => {
+      if (!walletId) throw new Error('Attempted to fetch balance without a walletId.')
+
+      return fetchBalance(network, accountIndex, asset, walletId)
+    },
+    enabled: isQueryEnabled(options?.enabled, isInitialized, !!walletId),
     refetchInterval: options?.refetchInterval,
     staleTime: options?.staleTime ?? DEFAULT_QUERY_STALE_TIME_MS,
     gcTime: DEFAULT_QUERY_GC_TIME_MS,
@@ -344,12 +349,12 @@ export function useBalancesForWallet(
   const isInitialized = workletStore.getState().isInitialized
 
   const walletId = walletStore.getState().activeWalletId
-  
-  if (!walletId) {
-    throw new Error('WalletId cannot be null')
-  }
 
   const initialData: BalanceFetchResult[] | undefined = (() => {
+    if (!walletId) {
+      return undefined
+    }
+
     const initialBalances: BalanceFetchResult[] = []
     let hasAnyInitialData = false
 
@@ -381,9 +386,13 @@ export function useBalancesForWallet(
   })()
 
   return useQuery({
-    queryKey: [...balanceQueryKeys.byWallet(walletId, accountIndex), 'all'],
-    queryFn: () => fetchBalancesForAssets(accountIndex, walletId, assetConfigs),
-    enabled: isQueryEnabled(options?.enabled, isInitialized, assetConfigs.length > 0),
+    queryKey: [...balanceQueryKeys.byWallet(walletId ?? '', accountIndex), 'all'],
+    queryFn: () => {
+      if (!walletId) throw new Error('Attempted to fetch balances without a walletId.')
+
+      return fetchBalancesForAssets(accountIndex, walletId, assetConfigs)
+    },
+    enabled: isQueryEnabled(options?.enabled, isInitialized, assetConfigs.length > 0 && !!walletId),
     refetchInterval: options?.refetchInterval,
     staleTime: options?.staleTime ?? DEFAULT_QUERY_STALE_TIME_MS,
     gcTime: DEFAULT_QUERY_GC_TIME_MS,
