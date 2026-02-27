@@ -17,7 +17,12 @@ export interface TransactionParams {
   amount: string // Amount in smallest denomination (e.g., wei)
 }
 
-export interface TransactionResult {
+export interface UseAccountResponse {
+  success: boolean
+  error?: string
+}
+
+export interface TransactionResult extends UseAccountResponse {
   hash: string
   fee: string
 }
@@ -53,12 +58,17 @@ export interface UseAccountReturn<T extends object> {
   /**
    * Signs a simple UTF-8 string message with the account's private key.
    */
-  sign: (message: string) => Promise<string>
+  sign: (message: string) => Promise<UseAccountResponse & { signature: string }>
 
   /**
    * Verifies a signature.
    */
-  verify: (message: string, signature: string) => Promise<boolean>
+  verify: (message: string, signature: string) => Promise<UseAccountResponse & { verified: boolean }>
+  
+  /**
+   * Query fee for a transaction.
+   */
+  estimateFee: (params?: Partial<TransactionParams>) => Promise<Omit<TransactionResult, 'hash'>>
 
   /**
    * Accesses chain-specific or other modular features not included in the core API.
@@ -75,7 +85,6 @@ export function useAccount<T extends object = {}>(
   accountParams: UseAccountParams,
 ): UseAccountReturn<T> {
   const { address, isLoading, error: addressLoaderError } = useAddressLoader(accountParams)
-
   const activeWalletId = getWalletStore()((state) => state.activeWalletId)
   
   const activeWalletError = useMemo(() => {
@@ -101,7 +110,7 @@ export function useAccount<T extends object = {}>(
   const getBalance = useCallback(
     async (tokens: IAsset[]): Promise<BalanceFetchResult[]> => {
       if (!account) {
-        throw new Error('Cannot get balance: no active account.')
+        return []
       }
 
       if (!tokens || tokens.length === 0) {
@@ -164,13 +173,18 @@ export function useAccount<T extends object = {}>(
   const send = useCallback(
     async (params: TransactionParams): Promise<TransactionResult> => {
       if (!account) {
-        throw new Error('Cannot send transaction: no active account.')
+        return {
+          success: false,
+          hash: '',
+          fee: '',
+          error: 'Cannot send transaction: no active account'
+        }
       }
       
       const { to, asset, amount } = params
 
       if (asset.isNative()) {
-        return await AccountService.callAccountMethod<'sendTransaction'>(
+        const txResult = await AccountService.callAccountMethod<'sendTransaction'>(
           account.network,
           account.accountIndex,
           'sendTransaction',
@@ -179,14 +193,24 @@ export function useAccount<T extends object = {}>(
             value: amount,
           },
         )
+        
+        return {
+          success: true,
+          ...txResult
+        }
       } else {
         const tokenAddress = asset.getContractAddress()
 
         if (!tokenAddress) {
-          throw new Error('Token address cannot be null')
+          return {
+            success: false,
+            hash: '',
+            fee: '',
+            error: 'Token address cannot be null'
+          }
         }
 
-        return await AccountService.callAccountMethod<'transfer'>(
+        const txResult = await AccountService.callAccountMethod<'transfer'>(
           account.network,
           account.accountIndex,
           'transfer',
@@ -196,16 +220,26 @@ export function useAccount<T extends object = {}>(
             token: tokenAddress,
           },
         )
+        
+        return {
+          success: true,
+          ...txResult
+        }
       }
     },
     [account],
   )
 
   const sign = useCallback(
-    async (message: string): Promise<string> => {
+    async (message: string): Promise<UseAccountResponse & { signature: string }> => {
       if (!account) {
-        throw new Error('Cannot sign message: no active account.')
+        return {
+          success: false,
+          signature: '',
+          error: 'Cannot sign message: no active account'
+        }
       }
+
       const signature = await AccountService.callAccountMethod<'sign'>(
         account.network,
         account.accountIndex,
@@ -213,15 +247,22 @@ export function useAccount<T extends object = {}>(
         message,
       )
 
-      return signature
+      return {
+        success: true,
+        signature
+      }
     },
     [account],
   )
 
   const verify = useCallback(
-    async (message: string, signature: string): Promise<boolean> => {
+    async (message: string, signature: string): Promise<UseAccountResponse & { verified: boolean }> => {
       if (!account) {
-        throw new Error('Cannot verify signature: no active account.')
+        return {
+          success: false,
+          verified: false,
+          error: 'Cannot verify signature: no active account'
+        }
       }
       
       const isValid = await AccountService.callAccountMethod<'verify'>(
@@ -232,9 +273,23 @@ export function useAccount<T extends object = {}>(
         signature,
       )
 
-      return isValid
+      return {
+        success: true,
+        verified: isValid
+      }
     },
     [account],
+  )
+  
+  const estimateFee = useCallback(
+    async (params?: Partial<TransactionParams>): Promise<Omit<TransactionResult, 'hash'>> => {
+      // call AccountService.callAccountMethod to invoke quoteTransaction method of WDK
+      // please define interface for quoteTransaction in DefaultAccountMethods
+      // refer to my implementation of verify, sign,...
+      // 
+      return { success: true, fee: '100' }
+    },
+    []
   )
 
   const extension = useCallback((): T => {
@@ -271,17 +326,20 @@ export function useAccount<T extends object = {}>(
   }, [account])
 
   return useMemo(
-    () => ({
-      address,
-      isLoading,
-      error: activeWalletError ?? addressLoaderError,
-      account,
-      getBalance,
-      send,
-      sign,
-      verify,
-      extension,
-    }),
+    () => {
+      return {
+        address,
+        isLoading,
+        error: activeWalletError ?? addressLoaderError,
+        account,
+        getBalance,
+        send,
+        sign,
+        verify,
+        estimateFee,
+        extension,
+      }
+    },
     [
       address,
       isLoading,
@@ -292,6 +350,7 @@ export function useAccount<T extends object = {}>(
       send,
       sign,
       verify,
+      estimateFee,
       extension,
     ],
   )

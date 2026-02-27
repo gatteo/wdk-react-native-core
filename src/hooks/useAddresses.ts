@@ -98,11 +98,11 @@ export function useAddresses(): UseAddressesReturn {
   const loadAddresses = useCallback(
     async (accountIndices: number[], networks?: string[]): Promise<AddressInfoResult[]> => {
       if (!activeWalletId) {
-        throw new Error('No active wallet to load addresses for.')
+        return []
       }
 
       if (!wdkConfigs) {
-        throw new Error('WDK is not initialized.')
+        return []
       }
       
       const allNetworks = Object.values(wdkConfigs.networks).map((n) => n.blockchain)
@@ -115,7 +115,6 @@ export function useAddresses(): UseAddressesReturn {
       }
 
       const networksToLoad = networks || allNetworks
-      
       const jobs = networksToLoad.flatMap((network) => 
         accountIndices.map((accountIndex) => ({ network, accountIndex }))
       )
