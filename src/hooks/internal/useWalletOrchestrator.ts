@@ -8,14 +8,14 @@ import {
   type WalletStore,
 } from '../../store/walletStore'
 import { WalletSetupService } from '../../services/walletSetupService'
-import { useWalletManager } from '../useWalletManagerV2'
+import { useWalletManager } from '../useWalletManager'
 import {
   getWalletSwitchDecision,
   shouldMarkWalletAsReady,
   shouldResetToNotLoaded,
 } from '../../utils/walletStateHelpers'
 import { log, logError } from '../../utils/logger'
-import type { WdkAppState } from '../../provider/WdkAppProviderV2'
+import type { WdkAppState } from '../../provider/WdkAppProvider'
 
 // Custom deep equality for walletLoadingState comparison
 const deepEqualityFn = (a: any, b: any) => {

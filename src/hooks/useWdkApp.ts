@@ -37,8 +37,8 @@
 
 import { useContext } from 'react'
 
-import { WdkAppContext } from '../provider/WdkAppProviderV2'
-import type { WdkAppContextValue } from '../provider/WdkAppProviderV2'
+import { WdkAppContext } from '../provider/WdkAppProvider'
+import type { WdkAppContextValue } from '../provider/WdkAppProvider'
 
 /**
  * Hook to access WdkAppProvider context

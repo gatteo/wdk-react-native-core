@@ -15,8 +15,8 @@ export type {
 
 export { BaseAsset } from './entities/asset'
 
-export { WdkAppProvider } from './provider/WdkAppProviderV2'
-export type { WdkAppProviderProps, WdkAppContextValue } from './provider/WdkAppProviderV2'
+export { WdkAppProvider } from './provider/WdkAppProvider'
+export type { WdkAppProviderProps, WdkAppContextValue } from './provider/WdkAppProvider'
 
 export { useWdkApp } from './hooks/useWdkApp'
 export { useAddresses } from './hooks/useAddresses'
@@ -25,8 +25,8 @@ export type { UseAddressesReturn } from './hooks/useAddresses'
 export { useAccount } from './hooks/useAccount'
 export type { UseAccountParams, UseAccountReturn } from './hooks/useAccount'
 
-export { useWalletManager } from './hooks/useWalletManagerV2'
-export type { UseWalletManagerResult, WalletInfo } from './hooks/useWalletManagerV2'
+export { useWalletManager } from './hooks/useWalletManager'
+export type { UseWalletManagerResult, WalletInfo } from './hooks/useWalletManager'
 export {
   useBalance,
   useBalancesForWallet,
