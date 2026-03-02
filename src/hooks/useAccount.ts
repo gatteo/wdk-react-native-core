@@ -56,8 +56,10 @@ export interface UseAccountReturn<T extends object> {
   
   /**
    * Query fee for a transaction.
+   * All params are optional — missing values are passed as-is to the WDK,
+   * which handles any network-specific defaults internally.
    */
-  estimateFee: (params: TransactionParams) => Promise<Omit<TransactionResult, 'hash'>>
+  estimateFee: (params?: Partial<TransactionParams>) => Promise<Omit<TransactionResult, 'hash'>>
 
   /**
    * Accesses chain-specific or other modular features not included in the core API.
@@ -226,19 +228,17 @@ export function useAccount<T extends object = {}>(
   )
   
   const estimateFee = useCallback(
-    async (params: TransactionParams): Promise<Omit<TransactionResult, 'hash'>> => {
-      const { to, asset, amount } = params
-
-      if (asset.isNative()) {
+    async (params?: Partial<TransactionParams>): Promise<Omit<TransactionResult, 'hash'>> => {
+      if (!params?.asset || params.asset.isNative()) {
         return await AccountService.callAccountMethod<'quoteSendTransaction'>(
           accountParams.network,
           accountParams.accountIndex,
           'quoteSendTransaction',
-          { to, value: amount },
+          { to: params?.to, value: params?.amount },
         )
       }
 
-      const tokenAddress = asset.getContractAddress()
+      const tokenAddress = params.asset.getContractAddress()
 
       if (!tokenAddress) {
         throw new Error('Token address cannot be null')
@@ -248,7 +248,7 @@ export function useAccount<T extends object = {}>(
         accountParams.network,
         accountParams.accountIndex,
         'quoteTransfer',
-        { recipient: to, amount, token: tokenAddress },
+        { recipient: params?.to, amount: params?.amount, token: tokenAddress },
       )
     },
     [accountParams.network, accountParams.accountIndex],
