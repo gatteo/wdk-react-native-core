@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useRef, useEffect } from 'react'
 import { AccountService } from '../services/accountService'
 import { getWalletStore } from '../store/walletStore'
 import type { IAsset } from '../types'
@@ -72,11 +72,12 @@ export interface UseAccountReturn<T extends object> {
 
   /**
    * Accesses chain-specific or other modular features not included in the core API.
-   * Returns a typed, proxied interface for the specified namespace.
+   * Returns a typed, "live" proxied interface that will work correctly even if
+   * the account is not ready at the time of its creation.
    * @example
    * const btcAccount = useAccount<WalletAccountBtc>();
-   * const btcExtension = btcAccount.extension();
-   * const utxos = await btcExtension.getTransfers();
+   * const btcExtension = btcAccount.extension(); // This can be called safely at any time
+   * const utxos = await btcExtension.getTransfers(); // This will work once the account is ready
    */
   extension: () => T
 }
@@ -106,6 +107,11 @@ export function useAccount<T extends object = {}>(
         : null,
     [accountParams.accountIndex, accountParams.network, activeWalletId, address],
   )
+  
+  const accountRef = useRef(account)
+  useEffect(() => {
+    accountRef.current = account
+  }, [account])
 
   const getBalance = useCallback(
     async (tokens: IAsset[]): Promise<BalanceFetchResult[]> => {
@@ -293,29 +299,28 @@ export function useAccount<T extends object = {}>(
   )
 
   const extension = useCallback((): T => {
-    if (!account) {
-      return new Proxy({} as T, {
-        get: (_target, prop) => {
-          if (prop === 'then') return undefined // Avoid issues with promise-like checks
-          
-          return () => {
+    return new Proxy({} as T, {
+      get: (_target, prop) => {
+        // Avoid issues with promise-like checks on the proxy itself
+        if (prop === 'then') {
+          return undefined;
+        }
+        
+        return async (...args: unknown[]) => {
+          const currentAccount = accountRef.current;
+
+          if (!currentAccount) {
             throw new Error(
               `Cannot call extension method "${String(
                 prop,
               )}": no active account.`,
             )
           }
-        },
-      })
-    }
 
-    return new Proxy({} as T, {
-      get: (_target, prop) => {
-        if (typeof prop === 'string') {
-          return async (...args: unknown[]) => {
+          if (typeof prop === 'string') {
             return await AccountService.callAccountMethod(
-              account.network,
-              account.accountIndex,
+              currentAccount.network,
+              currentAccount.accountIndex,
               prop,
               ...args,
             )
@@ -323,7 +328,7 @@ export function useAccount<T extends object = {}>(
         }
       },
     })
-  }, [account])
+  }, [])
 
   return useMemo(
     () => {
