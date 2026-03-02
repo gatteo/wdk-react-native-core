@@ -10,16 +10,14 @@ export type {
   AssetConfig,
   BalanceFetchResult,
   IAsset,
-  // Bundle and HRPC types
   BundleConfig,
 } from './types'
 
 export { BaseAsset } from './entities/asset'
 
-export { WdkAppProvider } from './provider/WdkAppProvider'
-export type { WdkAppProviderProps, WdkAppContextValue } from './provider/WdkAppProvider'
+export { WdkAppProvider } from './provider/WdkAppProviderV2'
+export type { WdkAppProviderProps, WdkAppContextValue } from './provider/WdkAppProviderV2'
 
-// Hooks (The Public API)
 export { useWdkApp } from './hooks/useWdkApp'
 export { useAddresses } from './hooks/useAddresses'
 export type { UseAddressesReturn } from './hooks/useAddresses'
