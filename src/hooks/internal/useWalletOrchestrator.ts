@@ -7,20 +7,15 @@ import {
   updateWalletLoadingState,
   type WalletStore,
 } from '../../store/walletStore'
-import { useWalletManager } from '../useWalletManager'
-import {
-  getCombinedStatus,
-  getWorkletStatus,
-  isAppInProgressStatus,
-  isAppReadyStatus,
-} from '../../utils/initializationState'
+import { WalletSetupService } from '../../services/walletSetupService'
+import { useWalletManager } from '../useWalletManagerV2'
 import {
   getWalletSwitchDecision,
-  shouldHandleError,
   shouldMarkWalletAsReady,
   shouldResetToNotLoaded,
 } from '../../utils/walletStateHelpers'
 import { log, logError } from '../../utils/logger'
+import { WdkAppState } from 'src/provider/WdkAppProviderV2'
 
 // Custom deep equality for walletLoadingState comparison
 const deepEqualityFn = (a: any, b: any) => {
@@ -45,26 +40,17 @@ export interface UseWalletOrchestratorProps {
   isWorkletStarted: boolean
   isWorkletInitialized: boolean
   workletError: string | null
-  isWorkletLoading: boolean
 }
 
-/**
- * The "brain" for all wallet-related state management and operations.
- * This hook encapsulates the complex logic for initializing, switching,
- * and synchronizing wallet state.
- */
 export function useWalletOrchestrator({
   enableAutoInitialization,
   currentUserId,
   isWorkletStarted,
   isWorkletInitialized,
   workletError,
-  isWorkletLoading,
 }: UseWalletOrchestratorProps) {
-  // Wallet state - read from walletStore (single source of truth)
   const walletStore = getWalletStore()
 
-  // Subscribe to primitive values directly
   const activeWalletId = walletStore(
     (state: WalletStore) => state.activeWalletId,
   )
@@ -93,19 +79,7 @@ export function useWalletOrchestrator({
     state.activeWalletId ? state.addresses[state.activeWalletId] : undefined,
   )
 
-  // Hooks for wallet operations
-  const {
-    initializeWallet,
-    hasWallet,
-    error: walletManagerError,
-  } = useWalletManager()
-
-  // Store initializeWallet in a ref to avoid it being a dependency of the effect
-  // This breaks the infinite loop: effect runs → component re-renders → initializeWallet recreated → effect runs again
-  const initializeWalletRef = useRef(initializeWallet)
-  useEffect(() => {
-    initializeWalletRef.current = initializeWallet
-  }, [initializeWallet])
+  const { createWallet, unlock } = useWalletManager()
 
   // Track authentication errors to prevent infinite retry loops
   // When biometric authentication fails, we shouldn't automatically retry
@@ -130,7 +104,6 @@ export function useWalletOrchestrator({
       return
     }
 
-    // VALIDATION 1: User identity must be confirmed before auto-initialization
     if (currentUserId === undefined || currentUserId === null) {
       log(
         '[useWalletOrchestrator] Waiting for user identity confirmation before auto-init',
@@ -141,7 +114,6 @@ export function useWalletOrchestrator({
       return
     }
 
-    // VALIDATION 2: If activeWalletId doesn't match currentUserId, set it to correct user
     if (activeWalletId !== currentUserId) {
       log('[useWalletOrchestrator] Setting activeWalletId to current user', {
         activeWalletId,
@@ -160,9 +132,11 @@ export function useWalletOrchestrator({
     }
 
     // EARLY EXIT: Skip if we have an authentication error to prevent infinite retry loop
-    if (authErrorRef.current) {
+    const loadingStateError =
+      walletLoadingState.type === 'error' && walletLoadingState.error?.message
+    if (loadingStateError && authErrorRef.current === loadingStateError) {
       log(
-        '[useWalletOrchestrator] Skipping auto-initialization due to authentication error',
+        '[useWalletOrchestrator] Skipping auto-initialization due to persistent authentication error',
         {
           error: authErrorRef.current,
         },
@@ -196,7 +170,55 @@ export function useWalletOrchestrator({
       return
     }
 
-    // Handle wallet switching
+    const initialize = async (walletId: string, isSwitching: boolean) => {
+      try {
+        const walletExists = await WalletSetupService.hasWallet(walletId)
+        const shouldCreateNew = !walletExists
+
+        log(
+          `[useWalletOrchestrator] Wallet initialization check for ${
+            isSwitching ? 'switch' : 'load'
+          }`,
+          {
+            activeWalletId: walletId,
+            walletExists,
+            shouldCreateNew,
+          },
+        )
+
+        if (shouldCreateNew) {
+          await createWallet(walletId)
+        } else {
+          await unlock(walletId)
+        }
+
+        log(
+          `[useWalletOrchestrator] Wallet initialization call completed for ${walletId}`,
+        )
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        const isAuthError =
+          errorMessage.includes('authentication') ||
+          errorMessage.includes('biometric') ||
+          errorMessage.includes('user cancel')
+
+        if (isAuthError && authErrorRef.current !== errorMessage) {
+          log(
+            '[useWalletOrchestrator] Authentication error detected - preventing auto-retry',
+            { error: errorMessage },
+          )
+          authErrorRef.current = errorMessage
+        }
+
+        logError(
+          `[useWalletOrchestrator] Failed to initialize wallet for ${
+            isSwitching ? 'switch' : 'load'
+          }:`,
+          error,
+        )
+      }
+    }
+
     const switchDecision = getWalletSwitchDecision(
       currentWalletId,
       activeWalletId,
@@ -208,84 +230,41 @@ export function useWalletOrchestrator({
         to: activeWalletId,
         hasAddresses,
         isWorkletStarted,
-        shouldMarkReady: switchDecision.shouldMarkReady,
       })
 
       if (isWorkletStarted) {
         if (isWalletInitializing) {
           log(
             '[useWalletOrchestrator] Skipping wallet switch initialization - already in progress',
-            {
-              activeWalletId,
-              walletLoadingState: walletLoadingState.type,
-            },
+            { activeWalletId, walletLoadingState: walletLoadingState.type },
           )
           return
         }
-
-        log(
-          '[useWalletOrchestrator] Wallet switch detected - triggering initialization',
-          {
-            activeWalletId,
-            hasAddresses,
-          },
-        )
-
-        ;(async () => {
-          try {
-            const walletExists = await hasWallet(activeWalletId)
-            const shouldCreateNew = !walletExists
-
-            log('[useWalletOrchestrator] Wallet existence check', {
-              activeWalletId,
-              walletExists,
-              shouldCreateNew,
-            })
-
-            await initializeWalletRef.current({
-              createNew: shouldCreateNew,
-              walletId: activeWalletId,
-            })
-            log(
-              '[useWalletOrchestrator] Wallet initialized successfully after switch',
-            )
-          } catch (error) {
-            logError(
-              '[useWalletOrchestrator] Failed to initialize wallet after switch:',
-              error,
-            )
-          }
-        })()
+        initialize(activeWalletId, true)
       } else {
         walletStore.setState((prev) =>
-          updateWalletLoadingState(prev, {
-            type: 'not_loaded',
-          }),
+          updateWalletLoadingState(prev, { type: 'not_loaded' }),
         )
       }
       return
     }
 
-    // Handle cached wallet on restart
-    if (
+    const needsInitialization =
       walletLoadingState.type === 'not_loaded' &&
-      hasAddresses &&
       activeWalletId &&
       isWorkletStarted
-    ) {
+
+    if (needsInitialization) {
       if (isWalletInitializing) {
         log(
-          '[useWalletOrchestrator] Skipping cached wallet initialization - already in progress',
-          {
-            activeWalletId,
-            walletLoadingState: walletLoadingState.type,
-          },
+          '[useWalletOrchestrator] Skipping wallet initialization - already in progress',
+          { activeWalletId, walletLoadingState: walletLoadingState.type },
         )
         return
       }
 
       log(
-        '[useWalletOrchestrator] Cached wallet detected on restart - triggering initialization',
+        '[useWalletOrchestrator] Wallet needs initialization - starting process',
         {
           activeWalletId,
           hasAddresses,
@@ -294,89 +273,10 @@ export function useWalletOrchestrator({
           walletLoadingState: walletLoadingState.type,
         },
       )
-
-      ;(async () => {
-        try {
-          const walletExists = await hasWallet(activeWalletId)
-          const shouldCreateNew = !walletExists
-
-          log('[useWalletOrchestrator] Wallet existence check', {
-            activeWalletId,
-            walletExists,
-            shouldCreateNew,
-          })
-
-          await initializeWalletRef.current({
-            createNew: shouldCreateNew,
-            walletId: activeWalletId,
-          })
-          log(
-            '[useWalletOrchestrator] Wallet initialized successfully from cache',
-          )
-        } catch (error) {
-          logError(
-            '[useWalletOrchestrator] Failed to initialize wallet from cache:',
-            error,
-          )
-        }
-      })()
-
+      initialize(activeWalletId, false)
       return
     }
 
-    // Handle new wallet initialization
-    if (
-      walletLoadingState.type === 'not_loaded' &&
-      !hasAddresses &&
-      activeWalletId &&
-      isWorkletStarted
-    ) {
-      if (isWalletInitializing) {
-        log(
-          '[useWalletOrchestrator] Skipping wallet initialization - already in progress',
-          {
-            activeWalletId,
-            walletLoadingState: walletLoadingState.type,
-          },
-        )
-        return
-      }
-
-      log(
-        '[useWalletOrchestrator] Active wallet detected without addresses - triggering initialization',
-        {
-          activeWalletId,
-          hasAddresses,
-          isWorkletStarted,
-          walletLoadingState: walletLoadingState.type,
-        },
-      )
-
-      ;(async () => {
-        try {
-          const walletExists = await hasWallet(activeWalletId)
-          const shouldCreateNew = !walletExists
-
-          log('[useWalletOrchestrator] Wallet existence check', {
-            activeWalletId,
-            walletExists,
-            shouldCreateNew,
-          })
-
-          await initializeWalletRef.current({
-            createNew: shouldCreateNew,
-            walletId: activeWalletId,
-          })
-          log('[useWalletOrchestrator] Wallet initialized successfully')
-        } catch (error) {
-          logError('[useWalletOrchestrator] Failed to initialize wallet:', error)
-        }
-      })()
-
-      return
-    }
-
-    // Handle ready state transitions
     if (
       shouldMarkWalletAsReady(
         walletLoadingState,
@@ -395,60 +295,19 @@ export function useWalletOrchestrator({
       )
       return
     }
-
-    // Handle errors from useWalletManager
-    if (
-      shouldHandleError(
-        walletManagerError,
-        currentWalletId,
-        activeWalletId,
-        walletLoadingState,
-      )
-    ) {
-      log('[useWalletOrchestrator] Wallet operation error detected', {
-        activeWalletId,
-        error: walletManagerError,
-      })
-      const error = new Error(walletManagerError!)
-
-      const errorMessage = walletManagerError?.toLowerCase() || ''
-      const isAuthError =
-        errorMessage.includes('authentication') ||
-        errorMessage.includes('biometric') ||
-        errorMessage.includes('user cancel')
-
-      if (isAuthError && !authErrorRef.current) {
-        log(
-          '[useWalletOrchestrator] Authentication error detected - preventing auto-retry',
-          {
-            error: walletManagerError,
-          },
-        )
-        authErrorRef.current = walletManagerError || 'Authentication failed'
-      }
-
-      walletStore.setState((prev) =>
-        updateWalletLoadingState(prev, {
-          type: 'error',
-          identifier: activeWalletId,
-          error,
-        }),
-      )
-    }
   }, [
     enableAutoInitialization,
     currentUserId,
     activeWalletId,
     walletLoadingState,
     walletAddresses,
-    walletManagerError,
     isWalletInitializing,
     isWorkletStarted,
     isWorkletInitialized,
-    hasWallet,
+    createWallet,
+    unlock,
   ])
 
-  // Retry initialization
   const retry = useCallback(() => {
     log('[useWalletOrchestrator] Retrying initialization...')
     if (authErrorRef.current) {
@@ -464,78 +323,32 @@ export function useWalletOrchestrator({
     }
   }, [walletLoadingState, walletStore])
 
-  // =================================================================
-  // Derived State
-  // =================================================================
+  const state = useMemo((): WdkAppState => {
+    const walletError =
+      walletLoadingState.type === 'error' ? walletLoadingState.error : null
+    const topLevelError = workletError ? new Error(workletError) : walletError
 
-  const walletStateObject = useMemo(
-    () => ({
-      status: walletLoadingState.type,
-      identifier: getWalletIdFromLoadingState(walletLoadingState),
-      error:
-        walletLoadingState.type === 'error' ? walletLoadingState.error : null,
-    }),
-    [walletLoadingState],
-  )
-
-  const workletStatus = useMemo(() => {
-    return getWorkletStatus({
-      isWorkletStarted,
-      isLoading: isWorkletLoading,
-      error: workletError,
-    })
-  }, [isWorkletStarted, isWorkletLoading, workletError])
-
-  const status = useMemo(() => {
-    return getCombinedStatus(
-      {
-        isWorkletStarted,
-        isLoading: isWorkletLoading,
-        error: workletError,
-      },
-      walletLoadingState,
-    )
-  }, [isWorkletStarted, isWorkletLoading, workletError, walletLoadingState])
-
-  const isInitializing = useMemo(() => isAppInProgressStatus(status), [status])
-  const isReady = useMemo(() => isAppReadyStatus(status), [status])
-
-  const walletError =
-    walletLoadingState.type === 'error' ? walletLoadingState.error : null
-  const initializationError = workletError
-    ? new Error(workletError)
-    : walletError
-
-  const walletExists = useMemo(() => {
-    if (walletLoadingState.type === 'loading') {
-      return walletLoadingState.walletExists
+    if (topLevelError) {
+      return { status: 'ERROR', error: topLevelError }
     }
-    if (walletLoadingState.type === 'ready') {
-      return true
-    }
-    return null
-  }, [walletLoadingState])
 
-  const loadingWalletId = useMemo(() => {
-    if (
-      walletLoadingState.type === 'checking' ||
-      walletLoadingState.type === 'loading'
-    ) {
-      return walletLoadingState.identifier
+    if (walletLoadingState.type === 'ready' && activeWalletId) {
+      return { status: 'READY', walletId: activeWalletId }
     }
-    return null
-  }, [walletLoadingState])
+
+    if (isWorkletStarted && !activeWalletId) {
+      return { status: 'NO_WALLET' }
+    }
+
+    if (activeWalletId) {
+      return { status: 'LOCKED', walletId: activeWalletId }
+    }
+
+    return { status: 'INITIALIZING' }
+  }, [workletError, walletLoadingState, isWorkletStarted, activeWalletId])
 
   return {
-    status,
-    workletStatus,
-    walletState: walletStateObject,
-    isInitializing,
-    isReady,
-    activeWalletId,
-    loadingWalletId,
-    walletExists,
-    error: initializationError,
+    state,
     retry,
   }
 }

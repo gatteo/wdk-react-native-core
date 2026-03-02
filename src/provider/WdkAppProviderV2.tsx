@@ -14,29 +14,18 @@ import {
   DEFAULT_QUERY_GC_TIME_MS,
   DEFAULT_QUERY_STALE_TIME_MS,
 } from '../utils/constants'
-import type { AppStatus, InitializationStatus } from '../utils/initializationState'
 import type { WdkConfigs, BundleConfig } from '../types'
 
+export type WdkAppState =
+  | { status: 'INITIALIZING' }
+  | { status: 'NO_WALLET' }
+  | { status: 'LOCKED'; walletId: string }
+  | { status: 'READY'; walletId: string }
+  | { status: 'ERROR'; error: Error };
+
 export interface WdkAppContextValue {
-  status: AppStatus
-  workletStatus: InitializationStatus
-  workletState: {
-    isReady: boolean
-    isLoading: boolean
-    error: string | null
-  }
-  walletState: {
-    status: 'not_loaded' | 'checking' | 'loading' | 'ready' | 'error'
-    identifier: string | null
-    error: Error | null
-  }
-  isInitializing: boolean
-  isReady: boolean
-  activeWalletId: string | null
-  loadingWalletId: string | null
-  walletExists: boolean | null
-  error: Error | null
-  retry: () => void
+  state: WdkAppState;
+  retry: () => void;
 }
 
 const WdkAppContext = createContext<WdkAppContextValue | null>(null)
@@ -93,7 +82,7 @@ export function WdkAppProvider<
         component: 'WdkAppProvider',
         operation: 'propsValidation',
       })
-      logError('[WdkAppProvider] Invalid props:', err)
+      logError('[WdkAppProviderV2] Invalid props:', err)
       throw err
     }
   }, [wdkConfigs])
@@ -101,7 +90,6 @@ export function WdkAppProvider<
   const {
     isWorkletStarted,
     isInitialized: isWorkletInitialized,
-    isLoading: isWorkletLoading,
     error: workletError,
   } = useWorkletInitializer({
     bundleConfig,
@@ -111,30 +99,20 @@ export function WdkAppProvider<
 
   useAppLifecycle({ clearSensitiveDataOnBackground })
 
-  const orchestratorState = useWalletOrchestrator({
+  const { state, retry } = useWalletOrchestrator({
     enableAutoInitialization,
     currentUserId,
     isWorkletStarted,
     isWorkletInitialized,
     workletError,
-    isWorkletLoading,
   })
-
-  const workletState = useMemo(
-    () => ({
-      isReady: isWorkletStarted && !isWorkletLoading && !workletError,
-      isLoading: isWorkletLoading,
-      error: workletError,
-    }),
-    [isWorkletStarted, isWorkletLoading, workletError],
-  )
 
   const contextValue: WdkAppContextValue = useMemo(
     () => ({
-      ...orchestratorState,
-      workletState,
+      state,
+      retry,
     }),
-    [orchestratorState, workletState],
+    [state, retry],
   )
 
   return (

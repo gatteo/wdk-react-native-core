@@ -37,8 +37,3 @@ export {
 export type { AccountInfo } from './store/walletStore'
 
 export { validateMnemonic } from './utils/mnemonicUtils'
-
-export {
-  InitializationStatus,
-  AppStatus,
-} from './utils/initializationState'
