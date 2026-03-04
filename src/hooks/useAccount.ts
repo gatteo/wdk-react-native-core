@@ -70,7 +70,7 @@ export interface UseAccountReturn<T extends object> {
    * All params are optional — if not provided, falls back to the account's own
    * address for `to` and '1' (smallest unit) for `amount`.
    */
-  estimateFee: (params?: Partial<TransactionParams>) => Promise<Omit<TransactionResult, 'hash'>>
+  estimateFee: (params: TransactionParams) => Promise<Omit<TransactionResult, 'hash'>>
 
   /**
    * Accesses chain-specific or other modular features not included in the core API.
