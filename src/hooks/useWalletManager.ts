@@ -62,8 +62,7 @@ export interface UseWalletManagerResult {
    * Create a temporary wallet for previewing addresses
    * This creates a wallet in memory only (no biometrics, not saved to secure storage)
    * Useful for previewing addresses before committing to creating a real wallet
-   *
-   * @param mnemonic - Optional mnemonic to restore from. If not provided, generates a new random wallet.
+   * Only one temporary wallet can exist at a time. Creating a new one will clear the previous session.
    */
   createTemporaryWallet: (walletId: string, mnemonic?: string) => Promise<string>
 
@@ -166,8 +165,8 @@ export function useWalletManager(): UseWalletManagerResult {
 
   const unlock = useCallback(
     async (walletId?: string) => {
-      // If walletId provided, set it as active first
       if (walletId) {
+        clearTemporaryWallet()
         walletStore.setState({ activeWalletId: walletId })
       }
 
@@ -256,6 +255,8 @@ export function useWalletManager(): UseWalletManagerResult {
 
   const restoreWallet = useCallback(
     async (mnemonic: string, walletId: string): Promise<string> => {
+      clearTemporaryWallet()
+
       const exists = await WalletSetupService.hasWallet(walletId)
 
       if (exists) {
@@ -464,7 +465,6 @@ export function useWalletManager(): UseWalletManagerResult {
       try {
         const effectiveWdkConfigs = getWdkConfigs()
 
-        // Ensure worklet is started
         await WorkletLifecycleService.ensureWorkletStarted(
           effectiveWdkConfigs,
           { autoStart: true },
@@ -515,16 +515,13 @@ export function useWalletManager(): UseWalletManagerResult {
     const { tempWalletId, activeWalletId } = walletStore.getState()
 
     if (!tempWalletId) {
-      return // No temp wallet to clear
+      return
     }
 
-    // If the currently active wallet is the temp wallet, lock the app.
-    // lock() resets the worklet engine and sets activeWalletId to null.
     if (activeWalletId === tempWalletId) {
       lock()
     }
 
-    // Remove the temp wallet from the list and clear the tempWalletId tracker
     walletStore.setState(
       produce((state: WalletState) => {
         state.walletList = state.walletList.filter(
@@ -537,13 +534,6 @@ export function useWalletManager(): UseWalletManagerResult {
     log('[useWalletManager] Cleared temporary wallet session')
   }, [lock, walletStore])
 
-  /**
-   * Create a temporary wallet for previewing addresses
-   * This creates a wallet in memory only (no biometrics, not saved to secure storage)
-   * Useful for previewing addresses before committing to creating a real wallet
-   *
-   * @param mnemonic - Optional mnemonic to restore from. If not provided, generates a new random wallet.
-   */
   const createTemporaryWallet = useCallback(
     async (walletId: string, mnemonic?: string): Promise<string> => {
       return withOperationMutex('createTemporaryWallet', async () => {
@@ -553,13 +543,10 @@ export function useWalletManager(): UseWalletManagerResult {
 
         try {
           const tempWalletId = walletId
-
-          // Clear any previous temporary wallet session first
           clearTemporaryWallet()
 
           const effectiveWdkConfigs = getWdkConfigs()
 
-          // Ensure worklet is started
           await WorkletLifecycleService.ensureWorkletStarted(
             effectiveWdkConfigs,
             { autoStart: true },
@@ -584,13 +571,11 @@ export function useWalletManager(): UseWalletManagerResult {
 
           const tempWalletInfo: WalletInfo = {
             identifier: tempWalletId,
-            exists: true, // It exists in memory
+            exists: true
           }
 
-          // Add the wallet to the list, set it as active, and track its ID
           walletStore.setState(
             produce((state: WalletState) => {
-              // Ensure no duplicates if clearTemporaryWallet failed for some reason
               state.walletList = state.walletList.filter(
                 (w) => w.identifier !== tempWalletId,
               )
@@ -600,7 +585,6 @@ export function useWalletManager(): UseWalletManagerResult {
             }),
           )
 
-          // Initialize WDK with temporary credentials to load it into the engine
           await WorkletLifecycleService.initializeWDK({
             encryptionKey,
             encryptedSeed,
@@ -627,6 +611,8 @@ export function useWalletManager(): UseWalletManagerResult {
    */
   const createWallet = useCallback(
     async (walletId: string) => {
+      clearTemporaryWallet()
+
       try {
         walletStore.setState((prev) =>
           updateWalletLoadingState(prev, {
