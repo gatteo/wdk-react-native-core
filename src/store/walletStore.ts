@@ -105,6 +105,7 @@ export interface WalletState {
   // Operation mutex - prevents concurrent wallet operations
   isOperationInProgress: boolean
   currentOperation: string | null // Description of current operation
+  tempWalletId: string | null
 }
 
 export type WalletStore = WalletState
@@ -123,6 +124,7 @@ const initialState: WalletState = {
   walletLoadingState: { type: 'not_loaded' },
   isOperationInProgress: false,
   currentOperation: null,
+  tempWalletId: null
 }
 
 const defaultStorageAdapter = createMMKVStorageAdapter()
