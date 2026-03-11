@@ -1,4 +1,4 @@
-# @tetherto/wdk-react-native-core
+# @tetherto/wdk-core-react-native
 
 Core functionality for React Native wallets - wallet management, balance fetching, and worklet operations.
 
@@ -18,7 +18,7 @@ Core functionality for React Native wallets - wallet management, balance fetchin
 ## Quick Start
 
 ```typescript
-import { WdkAppProvider, useWdkApp, useWallet, useBalance, BaseAsset } from '@tetherto/wdk-react-native-core'
+import { WdkAppProvider, useWdkApp, useWallet, useBalance, BaseAsset } from '@tetherto/wdk-core-react-native'
 // Import bundle from your generated .wdk folder (see Bundle Configuration)
 import { bundle } from './.wdk'
 
@@ -85,7 +85,7 @@ function WalletScreen() {
 ### Step 1: Install Dependencies
 
 ```bash
-npm install @tetherto/wdk-react-native-core
+npm install @tetherto/wdk-core-react-native
 npm install @tetherto/wdk-react-native-secure-storage
 npm install react@">=18.0.0" react-native@">=0.70.0"
 ```
@@ -93,7 +93,7 @@ npm install react@">=18.0.0" react-native@">=0.70.0"
 ### Step 2: Install from GitHub (if using source)
 
 ```bash
-npm install https://github.com/tetherto/wdk-react-native-core.git
+npm install https://github.com/tetherto/wdk-core-react-native.git
 ```
 
 Or add to your `package.json`:
@@ -101,7 +101,7 @@ Or add to your `package.json`:
 ```json
 {
   "dependencies": {
-    "@tetherto/wdk-react-native-core": "github:tetherto/wdk-react-native-core",
+    "@tetherto/wdk-core-react-native": "github:tetherto/wdk-core-react-native",
     "@tetherto/wdk-react-native-secure-storage": "github:tetherto/wdk-react-native-secure-storage"
   }
 }
@@ -289,7 +289,7 @@ const { data: balance, isLoading } = useBalance(
 ### Basic Wallet Setup
 
 ```typescript
-import { WdkAppProvider, useWdkApp, useWalletManager } from '@tetherto/wdk-react-native-core'
+import { WdkAppProvider, useWdkApp, useWalletManager } from '@tetherto/wdk-core-react-native'
 import { bundle } from './.wdk'
 
 function App() {
@@ -330,7 +330,7 @@ function WalletSetup() {
 ### Fetching Balances
 
 ```typescript
-import { useBalance, useBalancesForWallet, BaseAsset } from '@tetherto/wdk-react-native-core'
+import { useBalance, useBalancesForWallet, BaseAsset } from '@tetherto/wdk-core-react-native'
 
 // Define assets
 const eth = new BaseAsset({
@@ -380,7 +380,7 @@ function BalanceDisplay() {
 ### Using Account Methods
 
 ```typescript
-import { useWallet } from '@tetherto/wdk-react-native-core'
+import { useWallet } from '@tetherto/wdk-core-react-native'
 
 function AccountOperations() {
   const { callAccountMethod, isInitialized } = useWallet()
@@ -445,7 +445,7 @@ function AccountOperations() {
 ### Multiple Wallets
 
 ```typescript
-import { useWallet } from '@tetherto/wdk-react-native-core'
+import { useWallet } from '@tetherto/wdk-core-react-native'
 
 function MultiWalletApp() {
   const wallet1 = useWallet({ identifier: 'wallet-1' })
@@ -463,7 +463,7 @@ function MultiWalletApp() {
 ### Refreshing Balances
 
 ```typescript
-import { useRefreshBalance } from '@tetherto/wdk-react-native-core'
+import { useRefreshBalance } from '@tetherto/wdk-core-react-native'
 
 function RefreshButton() {
   const { mutate: refreshBalance } = useRefreshBalance()
